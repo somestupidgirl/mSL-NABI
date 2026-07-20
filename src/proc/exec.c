@@ -224,7 +224,10 @@ load_script(const char *script, size_t len, const char *elf_path, int argc, char
   for (int i = 0; i < sb_argc; ++i) {
     newargv[i] = sb_argv[i];
   }
-  newargv[sb_argc] = elf_path;
+  /* Cast is safe: newargv is only ever read - do_exec passes it to execve(2),
+   * which does not write through argv. The array cannot be declared const
+   * because execve takes char *const argv[]. */
+  newargv[sb_argc] = (char *) elf_path;
   memcpy(newargv + sb_argc + 1, argv + 1, (argc - 1) * sizeof(char *));
 
   do_exec(newargv[0], newargc, newargv, envp);

@@ -54,7 +54,11 @@ init_signal(void)
     struct sigaction oact;
     sigaction(i + 1, NULL, &oact);
     if (!(oact.sa_handler == SIG_IGN || oact.sa_handler == SIG_DFL)) {
-      warnk("sa_handler:%d\n", (int)oact.sa_handler);
+      /* Printed as a pointer: the old (int) cast truncated the handler
+       * address on a 64-bit host, so this diagnostic - which fires just
+       * before the assert below - reported a value that was not the
+       * handler. */
+      warnk("sa_handler:%p\n", (void *) oact.sa_handler);
     }
     assert(oact.sa_handler == SIG_IGN || oact.sa_handler == SIG_DFL);
     // flags, restorer, and mask will be flushed in execve, so just leave them 0

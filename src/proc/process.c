@@ -37,7 +37,10 @@ DEFINE_SYSCALL(sched_yield)
 
 DEFINE_SYSCALL(getpid)
 {
-  return syswrap(syscall(SYS_getpid));
+  /* syscall(2) has been deprecated since macOS 10.12. getpid() is equivalent
+   * here: Darwin's libc does not cache the pid across fork, so it is a real
+   * syscall every time (verified, not assumed). */
+  return syswrap(getpid());
 }
 
 DEFINE_SYSCALL(getuid)
@@ -589,7 +592,10 @@ DEFINE_SYSCALL(setpriority, int, which, int, who, int, niceval)
 
 DEFINE_SYSCALL(sched_getaffinity, l_pid_t, pid, unsigned int, len, gaddr_t, user_mask_ptr)
 {
-  static const unsigned sizeof_cpumask_t = 32; /* FIXME */
+  /* enum, not `static const unsigned`: a const object is not a constant
+   * expression in C, so buf[] below was a variable-length array that clang
+   * folded to a fixed one as an extension. */
+  enum { sizeof_cpumask_t = 32 }; /* FIXME */
   if (len < sizeof_cpumask_t)
     return -LINUX_EINVAL;
   unsigned char buf[sizeof_cpumask_t] = {0};

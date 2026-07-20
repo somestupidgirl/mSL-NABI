@@ -24,8 +24,11 @@ This installs the `nabi` command in your system. The `nabi` command is a simple 
 Only `x86_64` builds today — the VMM backend is VT-x, so it needs an Intel Mac
 with `kern.hv_support`. On Apple Silicon `make` stops with a pointer to
 [PORTING-arm64.md](PORTING-arm64.md); `make ARCH=x86_64` cross-builds the Intel
-backend, which is useful for checking that a change still compiles even though
-the result cannot run there.
+backend, which is useful for checking that a change still compiles.
+
+The cross-built binary will even start under Rosetta — enough to print its
+usage — but it cannot get further: there is no VT-x to build a VM on, so
+`hv_vm_create()` fails. `make check` detects this and skips.
 
 There is deliberately no `ARCH=universal`. The x86_64 build runs x86-64 Linux
 guests and an arm64 build will run aarch64 guests: those are two programs, not

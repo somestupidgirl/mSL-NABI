@@ -1158,12 +1158,6 @@ do_openat(int dirfd, const char *name, int flags, int mode)
   return r;
 }
 
-static int
-do_open(const char *path, int l_flags, int mode)
-{
-  return do_openat(LINUX_AT_FDCWD, path, l_flags, mode);
-}
-
 int
 vkern_openat(int atdirfd, const char *name, int flags, int mode)
 {

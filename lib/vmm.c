@@ -188,7 +188,11 @@ dump_instr()
   for (size_t i = 0; i < instlen; i ++) {
     unsigned char *ip = guest_to_host(rip);
     if (ip) {
-      sprintf(inst_str + 3 * i, "%02x ", ip[i]);
+      /* Exactly 3 bytes plus the terminator, which is why the buffer is
+       * instlen*3+1. snprintf rather than sprintf: the latter is deprecated,
+       * and only warns at -O0 because -O2 redirects it through the fortified
+       * builtin, so the debug build was noisier than the release build. */
+      snprintf(inst_str + 3 * i, sizeof inst_str - 3 * i, "%02x ", ip[i]);
     } else {
       printk("rip is in invalid user address: 0x%016llx\n", rip);
       send_signal(getpid(), LINUX_SIGSEGV);
