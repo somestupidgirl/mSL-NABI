@@ -1,0 +1,202 @@
+#
+# mSL/NABI - macOS Subsystem for Linux / Noah ABI
+#
+# Usage:
+#   make                    # build everything into $(OUT)
+#   make ARCH=x86_64        # cross-build the Intel guest backend
+#   make check              # run the guest test suite (needs a matching host)
+#   sudo make install       # install into the system (run AFTER make)
+#   sudo make uninstall     # remove from the system
+#   make clean              # remove build artifacts (no sudo needed)
+#
+# NOTE: never build as root. `make install` only COPIES already-built artifacts
+# from $(OUT), so every build artifact stays owned by the invoking user and
+# `make clean` never needs sudo.
+#
+OUT      := out
+PREFIX   ?= /usr/local
+
+VERSION  := $(strip $(shell cat VERSION 2>/dev/null || echo 0.0.0))
+
+# ---------------------------------------------------------------------------
+# Architecture
+#
+# Unlike the other mSL components there is deliberately no ARCH=universal here.
+# A fat binary would be meaningless: the x86_64 build runs x86-64 Linux guests
+# via VT-x and the arm64 build runs aarch64 guests via the ARM Hypervisor API.
+# They are not two builds of one program, they are two programs, and a lipo'd
+# binary would present a guest ABI depending on which slice the kernel picked.
+#
+# arm64e is likewise not a target: third-party arm64e userland binaries are not
+# supported for distribution and the ABI is explicitly unstable. (mSL/ProcFS
+# defaults to arm64e because kexts require that ABI; NABI is ordinary userland
+# and must not copy it.)
+# ---------------------------------------------------------------------------
+NATIVE_ARCH := $(shell uname -m)
+ARCH ?= $(NATIVE_ARCH)
+
+ARCH_SRCS := lib/vmm.c
+
+# The arch guard is a parse-time $(error), so it has to be skipped for goals
+# that do not build anything - otherwise `make clean` and `sudo make uninstall`
+# would be unusable on an arm64 host, which is exactly where they are most
+# needed while the port is in progress.
+GOALS        := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
+NONBUILD     := clean uninstall require-root
+NEEDS_BUILD  := $(filter-out $(NONBUILD),$(GOALS))
+
+ifneq ($(NEEDS_BUILD),)
+ifeq ($(ARCH),arm64)
+    $(error arm64 is not ported yet - the VMM backend is VT-x only. See \
+      PORTING-arm64.md. To cross-build the Intel backend: make ARCH=x86_64)
+else ifneq ($(ARCH),x86_64)
+    $(error Unknown ARCH=$(ARCH). Use x86_64 (arm64 is not ported yet))
+endif
+endif
+
+# ---------------------------------------------------------------------------
+# Toolchain
+# ---------------------------------------------------------------------------
+CC       ?= /usr/bin/cc
+CODESIGN ?= /usr/bin/codesign
+
+#
+# Code-signing identity. "-" means ad-hoc, which is what a development build
+# wants. Overridable from the environment, so verify the identity actually
+# exists before handing it to codesign: a stale SIGNCERT left exported in a
+# shell - pointing at a certificate that has since been removed - would
+# otherwise fail the build late, at the codesign step, with "no identity found".
+#
+SIGNCERT ?= -
+ifneq ($(SIGNCERT),-)
+ifeq ($(shell security find-identity -v 2>/dev/null | grep -c $(SIGNCERT)),0)
+$(warning SIGNCERT '$(SIGNCERT)' is not a valid signing identity in the keychain; falling back to ad-hoc signing)
+SIGNCERT := -
+endif
+endif
+
+ENTITLEMENTS := installer/noah.entitlements
+
+CFLAGS := -arch $(ARCH) -std=gnu11 -O2 -g \
+          -Wall -Wextra -Wno-unused-parameter \
+          -Iinclude
+
+# Kept from the CMake build: -O0, no frame-pointer omission, ASan.
+DEBUG_CFLAGS := -arch $(ARCH) -std=gnu11 -O0 -g \
+                -Wall -Wextra -Wno-unused-parameter \
+                -fsanitize=address -fno-omit-frame-pointer \
+                -Iinclude
+
+FRAMEWORKS := -framework Hypervisor -lpthread
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+COMMON_SRCS := src/main.c \
+               src/meta_strace.c \
+               src/base.c \
+               src/conv.c \
+               src/debug.c \
+               src/proc/exec.c \
+               src/proc/fork.c \
+               src/proc/process.c \
+               src/proc/ptrace.c \
+               src/net/net.c \
+               src/ipc/futex.c \
+               src/ipc/signal.c \
+               src/ipc/sem.c \
+               src/fs/fs.c \
+               src/sys/sys.c \
+               src/sys/time.c \
+               src/mm/mm.c \
+               src/mm/mmap.c \
+               src/mm/malloc.c \
+               src/mm/shm.c
+
+SRCS    := $(ARCH_SRCS) $(COMMON_SRCS)
+HEADERS := $(wildcard include/*.h include/*/*.h)
+
+NOAH    := $(OUT)/noah
+WRAPPER := $(OUT)/noah.pl
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
+all: build
+
+build: $(NOAH) $(WRAPPER)
+
+# The signature must be applied AFTER every write to the binary. Anything that
+# modifies it afterwards (strip, lipo, install_name_tool) invalidates the
+# signature and takes the entitlement with it - which surfaces much later as
+# hv_vm_create() returning HV_DENIED, and reads like a permissions problem
+# rather than a build problem.
+$(NOAH): $(SRCS) $(HEADERS) | $(OUT)
+	$(CC) $(CFLAGS) -o $@ $(SRCS) $(FRAMEWORKS)
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
+
+debug: | $(OUT)
+	$(CC) $(DEBUG_CFLAGS) -o $(NOAH) $(SRCS) $(FRAMEWORKS)
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $(NOAH)
+
+# The perl front-end. It locates the real binary and provisions a rootfs on
+# first run, so it needs both the version and the install prefix baked in.
+$(WRAPPER): bin/noah.in VERSION | $(OUT)
+	sed -e 's|@PROJECT_VERSION@|$(VERSION)|g' \
+	    -e 's|@CMAKE_INSTALL_PREFIX@|$(PREFIX)|g' $< > $@
+	chmod 755 $@
+
+$(OUT):
+	@mkdir -p $(OUT)
+
+# ---------------------------------------------------------------------------
+# Tests
+#
+# test/test.rb runs prebuilt Linux guest binaries (committed under
+# test/*/build/) and diffs their output. It therefore needs a host that can
+# actually run the guests: an x86_64 build on an Intel Mac with VT-x. Skip
+# rather than fail everywhere else, so `make check` is honest about what it did
+# instead of reporting a failure that says nothing about the code.
+#
+# Note test/test.mk - which REBUILDS those guest binaries - shells out to a
+# Linux box at idylls.jp that has not existed for years. Running the tests does
+# not need it; regenerating them does.
+# ---------------------------------------------------------------------------
+check: build
+	@if [ "$(ARCH)" != "$(NATIVE_ARCH)" ]; then \
+		echo "SKIP: built for $(ARCH) on a $(NATIVE_ARCH) host; the guest tests cannot run."; \
+	elif [ "$$(sysctl -n kern.hv_support 2>/dev/null)" != "1" ]; then \
+		echo "SKIP: kern.hv_support is not 1; this host cannot create VMs."; \
+	else \
+		cd test && ./test.rb ../$(NOAH); \
+	fi
+
+# ---------------------------------------------------------------------------
+# Install / uninstall
+# ---------------------------------------------------------------------------
+
+install: require-root require-built
+	install -d -m 755 -o root -g wheel $(PREFIX)/bin $(PREFIX)/libexec $(PREFIX)/man/man1
+	install -m 755 -o root -g wheel $(WRAPPER) $(PREFIX)/bin/noah
+	install -m 755 -o root -g wheel $(NOAH)    $(PREFIX)/libexec/noah
+	install -m 644 -o root -g wheel man/noah.1 $(PREFIX)/man/man1/noah.1
+	@echo "noah: installed to $(PREFIX). Run 'noah' to provision a rootfs and start."
+
+uninstall: require-root
+	rm -f $(PREFIX)/bin/noah $(PREFIX)/libexec/noah $(PREFIX)/man/man1/noah.1
+	@echo "noah: uninstalled. ~/.noah/tree is left alone - remove it by hand if"
+	@echo "      you want the rootfs gone; it may be several gigabytes."
+
+require-root:
+	@[ "$$(id -u)" -eq 0 ] || \
+		{ echo "error: run as root (sudo make $(MAKECMDGOALS))"; exit 1; }
+
+require-built:
+	@[ -x "$(NOAH)" ] && [ -x "$(WRAPPER)" ] || \
+		{ echo "error: not built. Run 'make' first."; exit 1; }
+
+clean:
+	rm -rf $(OUT)
+
+.PHONY: all build debug check install uninstall require-root require-built clean

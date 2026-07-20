@@ -4,8 +4,8 @@ VERSION=$1
 
 # commit & push
 
-FILE=`pwd`/`git rev-parse --show-cdup`/CMakeLists.txt
-sed -i "" "s/project(noah VERSION .*)/project(noah VERSION $VERSION)/" $FILE
+FILE=`pwd`/`git rev-parse --show-cdup`/VERSION
+echo "$VERSION" > $FILE
 git add $FILE
 
 while true; do

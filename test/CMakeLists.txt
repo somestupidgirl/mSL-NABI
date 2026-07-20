@@ -1,3 +1,0 @@
-add_test(NAME all
-  COMMAND ${PROJECT_SOURCE_DIR}/test/test.rb $<TARGET_FILE:noah>
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/test)

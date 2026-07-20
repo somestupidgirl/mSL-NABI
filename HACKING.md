@@ -3,13 +3,64 @@
 ## Build from Source
 
 ```console
-$ mkdir build
-$ cd build
-$ ccmake ..
-$ make && make install
+$ make
+$ sudo make install
 ```
 
-You can find an install prefix field in the graphical UI of ccmake. The commands above install the `noah` command in your system. The `noah` command is a simple perl script that checks if a Linux system is ready on your system and install it otherwise before executing the "real" noah binary.
+Artifacts land in `out/`. Never build as root: `make install` only *copies* what
+is already in `out/`, so every build artifact stays owned by you and `make clean`
+never needs `sudo`.
+
+Override the install prefix with `PREFIX` (default `/usr/local`):
+
+```console
+$ make PREFIX=/opt/local && sudo make PREFIX=/opt/local install
+```
+
+This installs the `noah` command in your system. The `noah` command is a simple perl script that checks if a Linux system is ready on your system and install it otherwise before executing the "real" noah binary.
+
+### Architecture
+
+Only `x86_64` builds today — the VMM backend is VT-x, so it needs an Intel Mac
+with `kern.hv_support`. On Apple Silicon `make` stops with a pointer to
+[PORTING-arm64.md](PORTING-arm64.md); `make ARCH=x86_64` cross-builds the Intel
+backend, which is useful for checking that a change still compiles even though
+the result cannot run there.
+
+There is deliberately no `ARCH=universal`. The x86_64 build runs x86-64 Linux
+guests and an arm64 build will run aarch64 guests: those are two programs, not
+two slices of one, and a fat binary would present a guest ABI depending on which
+slice the kernel picked.
+
+### Code signing
+
+The binary is signed at the end of every link, with
+`installer/noah.entitlements` granting `com.apple.security.hypervisor`. On Intel
+this is harmless; on Apple Silicon `hv_vm_create()` returns `HV_DENIED` without
+it, so it is mandatory there.
+
+Ad-hoc signing (the default, `SIGNCERT=-`) is enough for a development build.
+Set `SIGNCERT` to a keychain identity to sign with a real certificate;
+distribution needs a Developer ID with the entitlement granted by Apple.
+
+Nothing may modify the binary after the signature is applied — a later `strip`,
+`lipo` or `install_name_tool` invalidates it and silently takes the entitlement
+with it.
+
+### Tests
+
+```console
+$ make check
+```
+
+Runs `test/test.rb` against the prebuilt Linux guest binaries committed under
+`test/*/build/`. It needs a host that can actually run those guests (an x86_64
+build on an Intel Mac with VT-x) and *skips* with an explanation otherwise,
+rather than reporting a failure that says nothing about the code.
+
+Note that `test/test.mk`, which **rebuilds** those guest binaries, shells out to
+a Linux box at `idylls.jp` that has not existed for years. Running the tests
+does not need it; regenerating them does.
 
 The "real" noah binary, which is made from `src/main.c`, requires some mandatory command line options. If you want to execute it directly, you will need to start the binary with the following manner:
 
