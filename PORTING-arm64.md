@@ -1,0 +1,344 @@
+# Porting Noah to Apple Silicon (arm64)
+
+**Target:** run **aarch64** Linux binaries on arm64 macOS via Hypervisor.framework's ARM API.
+
+**Status:** plan only. No code written yet.
+
+---
+
+## 1. Why this is a rewrite, not a port
+
+Noah is a hardware hypervisor, not a syscall shim. It runs Linux user code as a
+guest inside a VT-x VM with a flat identity map, sets the VMCS exception bitmap to
+`0xffffffff` ([src/main.c:415](src/main.c#L415)), and catches the guest's `syscall`
+instruction as a `#UD` vmexit ([src/main.c:249](src/main.c#L249)) — `EFER.SCE` is
+never set, so `syscall` faults instead of executing. The `#UD` handler decodes the
+2-byte `0f 05`, reads the args out of RDI/RSI/RDX/R10/R8/R9, and dispatches.
+
+On arm64 the VMX API does not exist. From the macOS 26.5 SDK:
+
+```
+Hypervisor.framework/Headers/hv_vmx.h:11    #ifdef __x86_64__
+Hypervisor.framework/Headers/hv_vmx.h:259   #endif /* __x86_64__ */
+Hypervisor.framework/Headers/hv_vcpu.h:10   #ifdef __arm64__
+Hypervisor.framework/Headers/hv_vcpu.h:455  #endif
+```
+
+`hv_vmx_vcpu_read_vmcs`, `hv_vcpu_read_register`, `hv_x86_reg_t` and every `HV_X86_*`
+constant are compiled out entirely. The arm64 build gets a different API
+(`hv_vcpu_run` + `hv_vcpu_exit_t`, `hv_vcpu_get_reg`, `hv_vcpu_get_sys_reg`, ESR_EL2
+exit classes). There is no shim layer that makes one look like the other.
+
+Because the VM backend changes, the guest ISA changes with it, and that cascades
+into the ELF loader, the syscall table, signal frames, TLS, and the rootfs.
+
+### What survives
+
+Roughly 60% of the tree is architecture-neutral and should need only mechanical
+edits. Of the 167 implemented syscalls, the bodies in
+[src/fs/fs.c](src/fs/fs.c) (2159 lines), [src/net/net.c](src/net/net.c),
+[src/sys/time.c](src/sys/time.c), [src/ipc/futex.c](src/ipc/futex.c),
+[src/ipc/sem.c](src/ipc/sem.c), [src/mm/mmap.c](src/mm/mmap.c) and
+[src/conv.c](src/conv.c) are Darwin↔Linux translation with no x86 in them.
+
+A significant piece of luck: the `*at` syscalls that aarch64 *requires* (it has no
+`open`, `stat`, `dup2`, `pipe`, `fork`, `access`, `mkdir`, `unlink`, `rename`,
+`readlink`, `chmod`, `chown`, …) are **already implemented** — `openat`,
+`newfstatat`, `readlinkat`, `faccessat`, `pselect6`, `getdents64`, `dup3`, `pipe2`,
+`renameat`, `unlinkat`, `mkdirat`, `fchownat`, `fchmodat`, `symlinkat`, `linkat`.
+
+### What has to be rewritten
+
+| Concern | Today | File(s) |
+|---|---|---|
+| VM backend | VT-x / VMCS | [lib/vmm.c](lib/vmm.c), [include/vmm.h](include/vmm.h), [include/x86/vmx.h](include/x86/vmx.h) |
+| Exit dispatch | `VMX_REASON_*`, `#UD`, EPT violation | [src/main.c:200-390](src/main.c#L200) |
+| Guest page tables | x86 4-level, 1GiB `PTE_PS` blocks | [src/mm/pdp.h](src/mm/pdp.h), [src/mm/mm.c:47-65](src/mm/mm.c#L47) |
+| Segmentation / IDT / GDT | real x86 descriptors | [src/mm/mm.c:67-131](src/mm/mm.c#L67), [include/x86/vm.h](include/x86/vm.h), [src/main.c:437](src/main.c#L437) |
+| Guest ABI gate | `e_machine != EM_X86_64` | [src/proc/exec.c:56](src/proc/exec.c#L56), [src/proc/exec.c:107](src/proc/exec.c#L107) |
+| Syscall convention | nr=RAX, args RDI/RSI/RDX/R10/R8/R9 | [src/main.c:57](src/main.c#L57) |
+| Syscall numbering | x86-64 table, 329 entries | [include/syscall.h](include/syscall.h) |
+| Signal frames | 16 named x86 GPRs → `sigcontext` | [src/ipc/signal.c:122](src/ipc/signal.c#L122) |
+| Register snapshot (fork) | `x86_reg_list`, `vmcs_field_masked_list` | [lib/vmm.c:190](lib/vmm.c#L190), [src/proc/fork.c](src/proc/fork.c) |
+| FPU state | `fxsave` layout, `mxcsr` | [src/main.c:484](src/main.c#L484) |
+| Time / identity | TSC & `KERNEL_GS_BASE` MSRs, `CPUID` | [src/main.c:477](src/main.c#L477), [src/main.c:353](src/main.c#L353) |
+| Rootfs | x86-64 Ubuntu via `noahstrap` | [bin/noah.in:37](bin/noah.in#L37) |
+
+---
+
+## 2. The core design decision: how to trap `svc`
+
+This is the crux of the port and should be settled before anything else is written.
+
+On x86 Noah gets syscall traps for free: the guest runs at ring 0 with a flat map,
+`syscall` is disabled, and the resulting `#UD` exits straight to the host.
+
+ARM has no equivalent. `svc #0` from EL0 goes to **EL1**, not EL2 — the host never
+sees it. Hypervisor.framework does not expose an HCR_EL2 bit that routes `svc`
+directly to EL2.
+
+**Proposed design — EL1 trampoline:**
+
+1. Guest user code runs at **EL0**.
+2. Noah maps a small guest-owned **EL1 vector page** and points `VBAR_EL1` at it.
+3. The synchronous-exception entry in that vector is a handful of instructions
+   ending in `hvc #0`.
+4. `hvc` exits to the host: `hv_vcpu_run` returns with
+   `exit->reason == HV_EXIT_REASON_EXCEPTION` and `ESR_EL2.EC == 0x16` (HVC64).
+5. The host reads `x8` (syscall nr) and `x0`–`x5` (args) with `hv_vcpu_get_reg`,
+   dispatches through `sc_handler_table`, writes the result to `x0`.
+6. The host resumes; the EL1 stub `eret`s back to EL0 using the `ELR_EL1` /
+   `SPSR_EL1` the CPU saved on the original `svc`.
+
+The stub must also distinguish `svc` from a genuine EL0 fault by reading `ESR_EL1.EC`
+(`0x15` = SVC64) and forwarding data/instruction aborts through a different `hvc`
+immediate so the host can raise SIGSEGV.
+
+**Cost:** two exception-level transitions per syscall instead of one vmexit. Almost
+certainly still far cheaper than the syscall body itself.
+
+**Risk:** this is the single riskiest assumption in the plan. Phase 0 exists to
+prove it before anything depends on it.
+
+**Alternative considered and rejected:** rewriting `svc` to `hvc` at load time.
+Breaks self-modifying code, JITs, and anything that reads its own `.text`
+(the Go runtime does). Not viable.
+
+---
+
+## 3. ABI changes
+
+### 3.1 Syscall convention
+
+| | x86-64 | aarch64 |
+|---|---|---|
+| number | `rax` | `x8` |
+| args | `rdi rsi rdx r10 r8 r9` | `x0 x1 x2 x3 x4 x5` |
+| return | `rax` | `x0` |
+| instruction | `syscall` (`0f 05`) | `svc #0` (`d4000001`) |
+| PC advance | host does `rip += 2` | CPU already advanced `ELR_EL1` |
+
+Note the last row: [src/main.c:255](src/main.c#L255) manually adds 2 to RIP after a
+syscall. On ARM that must **not** happen — the saved `ELR_EL1` already points past
+the `svc`. Getting this wrong silently skips an instruction.
+
+### 3.2 Syscall numbering — the big one
+
+aarch64 uses the *generic* table from `asm-generic/unistd.h`, not the x86-64 table.
+The numbers are unrelated. Illustrative:
+
+| syscall | x86-64 | aarch64 |
+|---|---|---|
+| `read` | 0 | 63 |
+| `write` | 1 | 64 |
+| `openat` | 257 | 56 |
+| `mmap` | 9 | 222 |
+| `rt_sigreturn` | 15 | 139 |
+| `clone` | 56 | 220 |
+| `execve` | 59 | 221 |
+| `exit` | 60 | 93 |
+| `futex` | 202 | 98 |
+| `wait4` | 61 | 260 |
+
+**Do not hand-transcribe this.** Generate `include/syscall.h` from the kernel's
+`asm-generic/unistd.h` with a script under [util/](util/), so it is reproducible
+and auditable. Hand-typed syscall tables are where this port will otherwise die.
+
+The ~30 legacy handlers with no aarch64 number (`open`, `stat`, `fork`, `dup2`,
+`arch_prctl`, …) can stay compiled in — glibc will never call them. Removing them
+is cleanup, not a blocker.
+
+Missing and needed: `ppoll`, `epoll_create1`, `epoll_pwait`, `statx`.
+`fstatat` is aarch64's `newfstatat` (nr 79) and already exists under that name.
+
+### 3.3 TLS
+
+x86-64 sets the thread pointer with `arch_prctl(ARCH_SET_FS)` — a syscall Noah
+implements. aarch64 has **no such syscall**: the thread pointer is `TPIDR_EL0`,
+readable directly by user code with `mrs`. It is established by the `tls` argument
+to `clone`, and thereafter never goes through the kernel.
+
+So: delete the `arch_prctl` path, and make `clone` write `TPIDR_EL0` via
+`hv_vcpu_set_sys_reg`. Also confirm `TPIDR_EL0` is saved/restored across the
+fork snapshot and signal delivery — if it isn't, every threaded program breaks in a
+way that looks like random memory corruption.
+
+### 3.4 Signals
+
+aarch64 `sigcontext` is `{ fault_address, regs[31], sp, pc, pstate, __reserved[] }`
+followed by a chain of context records (`fpsimd_context`, `esr_context`,
+`sve_context`, terminated by a null record). This replaces the 16 named-register
+copies at [src/ipc/signal.c:122-140](src/ipc/signal.c#L122).
+
+Critically: **aarch64 does not support `SA_RESTORER`.** The kernel points `x30`
+at `__kernel_rt_sigreturn` in the vDSO. Noah therefore has to map a small vDSO-like
+page containing `mov x8, #139; svc #0` and point `x30` at it when delivering a
+signal. There is no equivalent requirement on x86-64, so this is net-new work with
+no existing code to adapt.
+
+### 3.5 Guest memory
+
+Stage-2 is the easy part — `hv_vm_map(haddr, ipa, size, flags)` has the same shape
+and the same `HV_MEMORY_READ/WRITE/EXEC` flags on both architectures, so
+[src/mm/mmap.c](src/mm/mmap.c) and the `mm_region` bookkeeping in
+[src/mm/mm.c](src/mm/mm.c) are essentially unchanged. `vmm_mmap`/`vmm_munmap` in
+[lib/vmm.c:34](lib/vmm.c#L34) port as-is.
+
+Stage-1 is new. Replace the x86 PML4/PDP pair with an ARM64 translation table
+(4KiB granule, 2MiB or 1GiB blocks for the straight map), plus `TTBR0_EL1`,
+`TCR_EL1`, `MAIR_EL1`, and `SCTLR_EL1.M`. [src/mm/pdp.h](src/mm/pdp.h) — 512
+generated entries — gets regenerated in ARM block-descriptor format.
+
+`user_addr_max` is `0x7fc0000000` and `kmap` stacks kernel objects above it
+([src/mm/mm.c:26-44](src/mm/mm.c#L26)). That layout can be kept; only the
+descriptor encoding changes.
+
+**Watch out:** Apple Silicon uses **16KiB** pages natively in macOS userland, while
+Linux/aarch64 guests overwhelmingly assume 4KiB. `PAGE_SIZE` assumptions are baked
+into `is_page_aligned`, `kmap`'s `& 0xfff` masks, and mmap offset handling. Decide
+early: 4KiB guest granule (correct for the guest, requires host allocations be
+16KiB-aligned and sub-mapped) vs 16KiB (breaks guest binaries). **Recommend 4KiB.**
+
+### 3.6 Segmentation, IDT, FPU, CPUID, TSC
+
+- `init_segment` ([src/mm/mm.c:74](src/mm/mm.c#L74)) — **delete**. ARM has no
+  segmentation. `struct segment_desc` and `struct gate_desc` in
+  [include/x86/vm.h](include/x86/vm.h) go with it.
+- `init_idt` ([src/main.c:437](src/main.c#L437)) — replaced by the `VBAR_EL1`
+  vector page from §2.
+- `init_fpu` ([src/main.c:484](src/main.c#L484)) — the `fxsave` struct and `mxcsr`
+  become FPSIMD `V0`–`V31` + `FPCR`/`FPSR`, via `hv_vcpu_get_simd_fp_reg`.
+- `CPUID` exit handling ([src/main.c:353](src/main.c#L353)) — gone. ARM ID
+  registers are read with `mrs` and trap only if configured to.
+- TSC / `MSR_KERNEL_GS_BASE` native-MSR passthrough
+  ([src/main.c:477](src/main.c#L477)) — gone; `CNTVCT_EL0` is directly readable.
+- AVX-on-demand `XCR0` handling ([src/main.c:259](src/main.c#L259)) — gone.
+
+### 3.7 Rootfs
+
+`noahstrap -p ubuntu` ([bin/noah.in:37](bin/noah.in#L37)) fetches an x86-64 Ubuntu
+tree. Needs an arm64 tree. `noahstrap` lives outside this repo (Homebrew formula) —
+either patch it for an `--arch` flag or point `bin/noah.in` at a
+`debootstrap --arch=arm64` tarball.
+
+---
+
+## 4. Phased implementation
+
+Each phase should land as its own commit and be independently testable.
+
+### Phase 0 — de-risk the trap mechanism *(do this first, standalone)*
+
+A ~200-line spike outside the Noah tree:
+
+- Entitle (`com.apple.security.hypervisor`) and codesign a test binary.
+- `hv_vm_create` → `hv_vcpu_create` → map one page → set `VBAR_EL1` → drop to EL0.
+- Execute `mov x8, #64; svc #0` in the guest.
+- Assert the host observes `HV_EXIT_REASON_EXCEPTION` with `ESR_EL2.EC == 0x16`,
+  reads `x8 == 64`, writes `x0`, and resumes cleanly back into EL0.
+
+**Gate:** if this doesn't work, the whole architecture in §2 is wrong and the plan
+needs revisiting before any Noah code is touched. Do not skip this.
+
+### Phase 1 — arch abstraction (no behaviour change, still x86-only)
+
+Introduce `include/arch.h` with an architecture-neutral vCPU interface, and move the
+existing VMX code behind it as `lib/vmm_x86.c`:
+
+```
+vmm_get_reg(enum vreg, uint64_t *)     /* VREG_PC, VREG_SP, VREG_ARG0..5, VREG_SYSNR, VREG_RET */
+vmm_set_reg(enum vreg, uint64_t)
+vmm_get_sysreg(...) / vmm_set_sysreg(...)
+vmm_run(struct vm_exit *)              /* normalised: EXIT_SYSCALL, EXIT_MMU_FAULT, EXIT_FAULT, EXIT_IRQ */
+```
+
+Rewrite `main_loop` ([src/main.c:200](src/main.c#L200)) against `struct vm_exit`
+instead of raw `VMX_REASON_*`. Rewrite `handle_syscall`
+([src/main.c:56](src/main.c#L56)) against `VREG_SYSNR`/`VREG_ARG*`.
+
+**Test:** the existing x86 suite in [test/](test/) must still pass on an Intel Mac
+(or under Rosetta, if `kern.hv_support` permits). This is the only phase with a
+regression baseline, so it is worth the discipline.
+
+### Phase 2 — arm64 VMM backend
+
+New `lib/vmm_arm64.c` implementing the Phase 1 interface on the ARM HVF API.
+New `include/arm64/vm.h` (translation-table descriptors, `TCR_EL1`/`MAIR_EL1`
+encodings) replacing [include/x86/vm.h](include/x86/vm.h).
+New `src/mm/ttbr.h` generated in place of [src/mm/pdp.h](src/mm/pdp.h).
+Add the EL1 vector page and `VBAR_EL1` setup.
+Delete `init_segment`, `init_idt`, `init_vmcs`, `init_special_regs`, `init_msr`,
+`check_vm_entry` from the arm64 build.
+
+Add entitlement + codesign steps to [CMakeLists.txt](CMakeLists.txt); select
+`vmm_x86.c` vs `vmm_arm64.c` on `CMAKE_SYSTEM_PROCESSOR`.
+
+**Milestone:** a static aarch64 `_exit(42)` binary runs to completion.
+
+### Phase 3 — syscall table + ABI
+
+Generate `include/syscall.h` from `asm-generic/unistd.h` (§3.2).
+Flip `EM_X86_64` → `EM_AARCH64` (183) in
+[src/proc/exec.c:56](src/proc/exec.c#L56) and
+[src/proc/exec.c:107](src/proc/exec.c#L107).
+Fix the initial stack/auxv layout in `do_exec` for the aarch64 ABI.
+Implement `ppoll`, `epoll_create1`, `epoll_pwait`, `statx`.
+Drop `arch_prctl`; move TLS to `TPIDR_EL0` in `clone`.
+
+**Milestone:** static `busybox` for aarch64 runs.
+
+### Phase 4 — signals, fork, threads
+
+Rewrite the `sigcontext` marshalling in
+[src/ipc/signal.c](src/ipc/signal.c) for aarch64 (§3.4).
+Add the sigreturn trampoline page.
+Rewrite `struct vcpu_snapshot` ([include/vmm.h:11](include/vmm.h#L11)) — the
+`vcpu_reg[]`/`vmcs[]`/2496-byte `fpu_states` triple becomes `x0`–`x30`, `SP`,
+`PC`, `PSTATE`, `TPIDR_EL0`, `V0`–`V31`, `FPCR`, `FPSR`. Update
+[src/proc/fork.c](src/proc/fork.c) and `vmm_reentry`
+([lib/vmm.c:250](lib/vmm.c#L250)) accordingly.
+
+**Milestone:** `test_fork`, `test_thread`, `test_sigaction` equivalents pass.
+
+### Phase 5 — dynamic linking and rootfs
+
+arm64 rootfs (§3.7); get `ld-linux-aarch64.so.1` working; then bash.
+
+**Milestone:** the README's `$ noah` → interactive bash.
+
+### Phase 6 — test suite
+
+Port [test/include/noah.S](test/include/noah.S) and the assertion tests to
+aarch64. Retarget [test/misc/xmm0.s](test/misc/xmm0.s) to FPSIMD or drop it.
+
+---
+
+## 5. Platform prerequisites
+
+1. **Entitlement.** HVF on Apple Silicon requires `com.apple.security.hypervisor`
+   and a valid code signature — unlike Intel, where an unsigned binary could call
+   `hv_vm_create`. This must be wired into the build in Phase 2, and it affects the
+   Homebrew/MacPorts formulae.
+
+2. **`arm64e` specifically is not a shippable target.** The arm64e ABI (pointer
+   authentication) is reserved for platform binaries; third-party arm64e userland
+   binaries are not supported for distribution and the ABI is explicitly unstable.
+   **This plan targets plain `arm64`,** which is what runs on your M5. If you
+   specifically need arm64e for a kernel-adjacent reason, say so — it changes the
+   signing and distribution story substantially.
+
+3. **`check_platform_version`** ([src/main.c:614](src/main.c#L614)) already checks
+   `kern.hv_support`, which is correct on both architectures. The `MACOS_PRE_16`
+   guard in [CMakeLists.txt:9](CMakeLists.txt#L9) is dead on Apple Silicon.
+
+---
+
+## 6. Honest assessment
+
+This is a large project. Phases 0–2 are the hard, uncertain part — everything after
+is substantial but well-understood work. The upstream project is unmaintained and
+last targeted macOS Sierra, so expect unrelated bitrot against macOS 26 on top of
+the porting work itself.
+
+The single most valuable next step is **Phase 0**. It is a day of work and it
+either validates or invalidates the entire design.
