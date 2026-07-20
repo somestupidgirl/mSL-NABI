@@ -126,8 +126,19 @@ struct l_ifreq {
   } ifr_ifru;
 } __packed;
 
-#define	ifr_name	ifr_ifrn.ifrn_name	/* Interface name */
-#define	ifr_hwaddr	ifr_ifru.ifru_hwaddr	/* MAC address */
+/*
+ * Prefixed with l_, unlike the Linux originals they mirror.
+ *
+ * Linux spells these ifr_name / ifr_hwaddr, but Darwin's <net/if.h> declares a
+ * *struct member* of the same name, and it arrives here indirectly: any
+ * translation unit that includes <sys/ioctl.h> after this header pulls in
+ * <sys/sockio.h> -> <net/if.h>, where the bare macro rewrites the member
+ * declaration and the SDK header fails to parse. Keeping the l_ prefix used by
+ * everything else in this file removes the collision at the source rather than
+ * making every caller depend on include order.
+ */
+#define	l_ifr_name	ifr_ifrn.ifrn_name	/* Interface name */
+#define	l_ifr_hwaddr	ifr_ifru.ifru_hwaddr	/* MAC address */
 
 struct l_ifconf {
   int	ifc_len;
@@ -137,8 +148,14 @@ struct l_ifconf {
   } ifc_ifcu;
 };
 
-#define	ifc_buf		ifc_ifcu.ifcu_buf
-#define	ifc_req		ifc_ifcu.ifcu_req
+/*
+ * Same treatment, though these two are only a latent version of the problem:
+ * Darwin defines ifc_buf / ifc_req as macros too, and today its expansions are
+ * token-identical to ours, so the redefinition is silently legal. That is luck,
+ * not design.
+ */
+#define	l_ifc_buf	ifc_ifcu.ifcu_buf
+#define	l_ifc_req	ifc_ifcu.ifcu_req
 
 /* msg flags in recvfrom/recvmsg */
 

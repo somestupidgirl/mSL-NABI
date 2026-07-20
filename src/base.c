@@ -104,7 +104,11 @@ copy_to_user(gaddr_t to_ptr, const void *src, size_t n)
   return 0;
 }
 
-DEFINE_SYSCALL(unimplemented)
+/* Six dummy arguments for the same reason as DEFINE_NOT_IMPLEMENTED_SYSCALL
+ * below; here the prototype comes afterwards, so clang reports it as a warning
+ * rather than an error, but it is the same defect. */
+DEFINE_SYSCALL(unimplemented, uint64_t, a1, uint64_t, a2, uint64_t, a3,
+                              uint64_t, a4, uint64_t, a5, uint64_t, a6)
 {
   uint64_t rax;
 
@@ -134,10 +138,21 @@ char *sc_name_table[NR_SYSCALLS] = {
 #undef SYSCALL
 };
 
-#define DEFINE_NOT_IMPLEMENTED_SYSCALL(name)      \
-  DEFINE_SYSCALL(name)                            \
-  {                                               \
-    return -LINUX_ENOSYS;                         \
+/*
+ * Six dummy arguments, matching the prototype block above, rather than the
+ * empty parameter list this used to have.
+ *
+ * `uint64_t _sys_vserver()` is a non-prototype declaration: in C23 - which
+ * clang now applies even under -std=gnu11 - it means "takes no arguments"
+ * instead of "arguments unspecified", so it conflicts with the six-argument
+ * prototype every syscall is declared with. Spelling the arguments out keeps
+ * the two in agreement, and costs nothing since the body ignores them.
+ */
+#define DEFINE_NOT_IMPLEMENTED_SYSCALL(name)                          \
+  DEFINE_SYSCALL(name, uint64_t, a1, uint64_t, a2, uint64_t, a3,      \
+                       uint64_t, a4, uint64_t, a5, uint64_t, a6)      \
+  {                                                                   \
+    return -LINUX_ENOSYS;                                             \
   }
 
 DEFINE_NOT_IMPLEMENTED_SYSCALL(vserver)
