@@ -2,7 +2,9 @@
 
 **Target:** run **aarch64** Linux binaries on arm64 macOS via Hypervisor.framework's ARM API.
 
-**Status:** plan only. No code written yet.
+**Status:** Phase 0 complete and **passing** — the EL1 trampoline in §2 is
+validated on hardware (M5, macOS 26). See [spike/arm64-trap/](spike/arm64-trap/).
+Phases 1–6 not started.
 
 ---
 
@@ -94,11 +96,23 @@ The stub must also distinguish `svc` from a genuine EL0 fault by reading `ESR_EL
 (`0x15` = SVC64) and forwarding data/instruction aborts through a different `hvc`
 immediate so the host can raise SIGSEGV.
 
-**Cost:** two exception-level transitions per syscall instead of one vmexit. Almost
-certainly still far cheaper than the syscall body itself.
+**Cost:** measured, not estimated — **~818 ns** per empty round trip
+(EL0 `svc` → EL1 stub → `hvc` → host → `eret` → EL0), 200k iterations on an M5,
+with no syscall dispatch on the host side at all. That is the floor.
 
-**Risk:** this is the single riskiest assumption in the plan. Phase 0 exists to
-prove it before anything depends on it.
+For comparison a native Linux syscall is ~50–100 ns, so this is roughly 10×. But
+the dominant term is the `hv_vcpu_run` transition, not the two exception-level
+changes, which puts it in the same class as the x86 build's VMCS round trip
+(a VT-x vmexit is ~300–600 ns). So the design is no worse than what NABI does
+today on Intel, and it stays noise against any syscall that touches a file or a
+socket. Syscall-dense workloads in tight loops will feel it.
+
+Worth noting that the usual worst offenders need not trap at all on aarch64:
+`CNTVCT_EL0` is readable directly from EL0, so the clock calls that dominate many
+syscall profiles can be served without a round trip.
+
+**Risk:** ~~this is the single riskiest assumption in the plan~~ — **resolved.**
+Phase 0 proved it on hardware before anything was built on it. See §4.
 
 **Alternative considered and rejected:** rewriting `svc` to `hvc` at load time.
 Breaks self-modifying code, JITs, and anything that reads its own `.text`
@@ -227,18 +241,42 @@ either patch it for an `--arch` flag or point `bin/noah.in` at a
 
 Each phase should land as its own commit and be independently testable.
 
-### Phase 0 — de-risk the trap mechanism *(do this first, standalone)*
+### Phase 0 — de-risk the trap mechanism ✅ **DONE — PASSING**
 
-A ~200-line spike outside the Noah tree:
+Lives in [spike/arm64-trap/](spike/arm64-trap/); `make run` there reproduces it.
+Standalone, arm64-only, and not wired into the top-level build (which is x86_64-
+only, so the two would fight over `ARCH`). Throwaway once Phase 2 lands.
 
-- Entitle (`com.apple.security.hypervisor`) and codesign a test binary.
-- `hv_vm_create` → `hv_vcpu_create` → map one page → set `VBAR_EL1` → drop to EL0.
-- Execute `mov x8, #64; svc #0` in the guest.
-- Assert the host observes `HV_EXIT_REASON_EXCEPTION` with `ESR_EL2.EC == 0x16`,
-  reads `x8 == 64`, writes `x0`, and resumes cleanly back into EL0.
+It maps one 64KiB region, points `VBAR_EL1` at an `hvc #0; eret` stub, `eret`s
+from EL1 down to EL0, and runs `mov x8, #64; svc #0` twice. The MMU stays off
+(`SCTLR_EL1.M == 0`), so both ELs address memory flat through stage 2 — no page
+tables, no `TTBR0_EL1`, no `TCR`/`MAIR`. Those are Phase 2's problem.
 
-**Gate:** if this doesn't work, the whole architecture in §2 is wrong and the plan
-needs revisiting before any Noah code is touched. Do not skip this.
+**Result on an M5 / macOS 26 — the design in §2 holds exactly as specified:**
+
+| Claim | Observed |
+|---|---|
+| `svc` at EL0 reaches the EL1 vector | yes, via `VBAR_EL1 + 0x400` (lower EL, AArch64, sync) |
+| `hvc` from EL1 exits to the host | yes, `HV_EXIT_REASON_EXCEPTION` |
+| with `ESR_EL2.EC == 0x16` | yes, HVC64 |
+| host reads the syscall nr from `x8` | yes, 64 then 93 |
+| host writes `x0`, value survives the return | yes, sentinel intact at the next trap |
+| `eret` resumes EL0 after the `svc` | yes |
+
+Three findings worth carrying into Phase 2:
+
+1. **`ELR_EL1` already points past the `svc`** (observed `0x10808` for an `svc` at
+   `0x10804`). This confirms §3.1: the x86 build's manual `rip += 2`
+   ([src/main.c:255](src/main.c#L255)) must have **no** equivalent here. Adding one
+   would silently skip an instruction after every syscall.
+2. **HVF returns with PC already past the `hvc`.** No manual advance is needed
+   after an HVC exit. The spike carries defensive code for the other case; it
+   never fires.
+3. **`SPSR_EL1` reads `0x3C0`** at the trap — EL0t with DAIF masked — confirming
+   the exception genuinely originated at EL0 rather than at EL1.
+
+**Gate:** ~~if this doesn't work, the whole architecture in §2 is wrong~~ —
+cleared. Phase 1 may proceed.
 
 ### Phase 1 — arch abstraction (no behaviour change, still x86-only)
 

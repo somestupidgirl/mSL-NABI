@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	    Required to call hv_vm_create() on Apple Silicon. On Intel an unsigned
+	    binary could create a VM; on arm64 the entitlement and a valid signature
+	    are both mandatory, and hv_vm_create() returns HV_DENIED without them.
+
+	    Ad-hoc signing (SIGNCERT=-) carries this fine for a local development
+	    build. Distribution needs a Developer ID with the entitlement granted by
+	    Apple.
+	-->
+	<key>com.apple.security.hypervisor</key>
+	<true/>
+</dict>
+</plist>
