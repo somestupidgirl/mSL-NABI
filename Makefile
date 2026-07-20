@@ -1,6 +1,8 @@
 #
 # mSL/NABI - macOS Subsystem for Linux / Noah ABI
 #
+# The command is `nabi`; the project it descends from was called Noah.
+#
 # Usage:
 #   make                    # build everything into $(OUT)
 #   make ARCH=x86_64        # cross-build the Intel guest backend
@@ -42,7 +44,7 @@ ARCH_SRCS := lib/vmm.c
 # would be unusable on an arm64 host, which is exactly where they are most
 # needed while the port is in progress.
 GOALS        := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
-NONBUILD     := clean uninstall require-root
+NONBUILD     := clean uninstall migrate require-root
 NEEDS_BUILD  := $(filter-out $(NONBUILD),$(GOALS))
 
 ifneq ($(NEEDS_BUILD),)
@@ -75,7 +77,7 @@ SIGNCERT := -
 endif
 endif
 
-ENTITLEMENTS := installer/noah.entitlements
+ENTITLEMENTS := installer/nabi.entitlements
 
 CFLAGS := -arch $(ARCH) -std=gnu11 -O2 -g \
           -Wall -Wextra -Wno-unused-parameter \
@@ -116,8 +118,8 @@ COMMON_SRCS := src/main.c \
 SRCS    := $(ARCH_SRCS) $(COMMON_SRCS)
 HEADERS := $(wildcard include/*.h include/*/*.h)
 
-NOAH    := $(OUT)/noah
-WRAPPER := $(OUT)/noah.pl
+NABI    := $(OUT)/nabi
+WRAPPER := $(OUT)/nabi.pl
 
 # ---------------------------------------------------------------------------
 # Build
@@ -125,26 +127,26 @@ WRAPPER := $(OUT)/noah.pl
 
 all: build
 
-build: $(NOAH) $(WRAPPER)
+build: $(NABI) $(WRAPPER)
 
 # The signature must be applied AFTER every write to the binary. Anything that
 # modifies it afterwards (strip, lipo, install_name_tool) invalidates the
 # signature and takes the entitlement with it - which surfaces much later as
 # hv_vm_create() returning HV_DENIED, and reads like a permissions problem
 # rather than a build problem.
-$(NOAH): $(SRCS) $(HEADERS) | $(OUT)
+$(NABI): $(SRCS) $(HEADERS) | $(OUT)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(FRAMEWORKS)
 	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
 
 debug: | $(OUT)
-	$(CC) $(DEBUG_CFLAGS) -o $(NOAH) $(SRCS) $(FRAMEWORKS)
-	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $(NOAH)
+	$(CC) $(DEBUG_CFLAGS) -o $(NABI) $(SRCS) $(FRAMEWORKS)
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $(NABI)
 
 # The perl front-end. It locates the real binary and provisions a rootfs on
 # first run, so it needs both the version and the install prefix baked in.
-$(WRAPPER): bin/noah.in VERSION | $(OUT)
+$(WRAPPER): bin/nabi.in VERSION | $(OUT)
 	sed -e 's|@PROJECT_VERSION@|$(VERSION)|g' \
-	    -e 's|@CMAKE_INSTALL_PREFIX@|$(PREFIX)|g' $< > $@
+	    -e 's|@PREFIX@|$(PREFIX)|g' $< > $@
 	chmod 755 $@
 
 $(OUT):
@@ -169,23 +171,45 @@ check: build
 	elif [ "$$(sysctl -n kern.hv_support 2>/dev/null)" != "1" ]; then \
 		echo "SKIP: kern.hv_support is not 1; this host cannot create VMs."; \
 	else \
-		cd test && ./test.rb ../$(NOAH); \
+		cd test && ./test.rb ../$(NABI); \
 	fi
 
 # ---------------------------------------------------------------------------
 # Install / uninstall
 # ---------------------------------------------------------------------------
 
-install: require-root require-built
+install: require-root require-built migrate
 	install -d -m 755 -o root -g wheel $(PREFIX)/bin $(PREFIX)/libexec $(PREFIX)/man/man1
-	install -m 755 -o root -g wheel $(WRAPPER) $(PREFIX)/bin/noah
-	install -m 755 -o root -g wheel $(NOAH)    $(PREFIX)/libexec/noah
-	install -m 644 -o root -g wheel man/noah.1 $(PREFIX)/man/man1/noah.1
-	@echo "noah: installed to $(PREFIX). Run 'noah' to provision a rootfs and start."
+	install -m 755 -o root -g wheel $(WRAPPER) $(PREFIX)/bin/nabi
+	install -m 755 -o root -g wheel $(NABI)    $(PREFIX)/libexec/nabi
+	install -m 644 -o root -g wheel man/nabi.1 $(PREFIX)/man/man1/nabi.1
+	@echo "nabi: installed to $(PREFIX). Run 'nabi' to provision a rootfs and start."
+
+# ---------------------------------------------------------------------------
+# Migration from the pre-rename install (the command was called noah).
+#
+# The old libexec binary matters more than the usual stale-file cleanup: the
+# perl wrapper offers to chown it root:admin and set its setuid bit, so leaving
+# it behind can orphan a setuid-root executable on the user's disk with nothing
+# left that knows it is there.
+#
+# The rootfs is deliberately NOT touched here. ~/.noah/tree is per-user, may be
+# several gigabytes, and belongs to whoever is running the command rather than
+# to root - the wrapper adopts it into ~/.nabi/tree on first run instead.
+#
+# Idempotent, and silent when there is nothing from the old install to remove.
+# ---------------------------------------------------------------------------
+migrate: require-root
+	-@for stale in $(PREFIX)/libexec/noah $(PREFIX)/bin/noah \
+	               $(PREFIX)/man/man1/noah.1; do \
+		[ -e "$$stale" ] || continue; \
+		echo "nabi: removing the superseded $$stale"; \
+		rm -f "$$stale"; \
+	done
 
 uninstall: require-root
-	rm -f $(PREFIX)/bin/noah $(PREFIX)/libexec/noah $(PREFIX)/man/man1/noah.1
-	@echo "noah: uninstalled. ~/.noah/tree is left alone - remove it by hand if"
+	rm -f $(PREFIX)/bin/nabi $(PREFIX)/libexec/nabi $(PREFIX)/man/man1/nabi.1
+	@echo "nabi: uninstalled. ~/.nabi/tree is left alone - remove it by hand if"
 	@echo "      you want the rootfs gone; it may be several gigabytes."
 
 require-root:
@@ -193,10 +217,10 @@ require-root:
 		{ echo "error: run as root (sudo make $(MAKECMDGOALS))"; exit 1; }
 
 require-built:
-	@[ -x "$(NOAH)" ] && [ -x "$(WRAPPER)" ] || \
+	@[ -x "$(NABI)" ] && [ -x "$(WRAPPER)" ] || \
 		{ echo "error: not built. Run 'make' first."; exit 1; }
 
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all build debug check install uninstall require-root require-built clean
+.PHONY: all build debug check install migrate uninstall require-root require-built clean

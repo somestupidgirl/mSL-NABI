@@ -1,28 +1,48 @@
-# Noah
+# mSL/NABI
 
-Noah is a Darwin subsystem for Linux, or "Bash on Ubuntu on Mac OS X". Noah is implemented as a hypervisor that traps linux system calls and translates them into Darwin's system calls. Noah also has an interpreter of ELF files so that binary executables of Linux run directly and flawlessly without any modifications.
+**NABI** (Noah ABI) is the Linux ABI layer of **mSL**, the macOS Subsystem for
+Linux. It is implemented as a hypervisor that traps Linux system calls and
+translates them into Darwin's, and it interprets ELF files so that Linux binary
+executables run directly, without modification.
 
-__Noah is an experimental product__. Most Linux apps don't work well due to missing system calls. For the technical details, please refer to [its academic paper](https://dl.acm.org/doi/abs/10.1145/3381052.3381327). Currently, this repository is not actively maintained. It might not run on the latest macOS.
+NABI is a fork of [Noah](https://github.com/linux-noah/noah), which is no longer
+maintained. For the technical background, see the original
+[academic paper](https://dl.acm.org/doi/abs/10.1145/3381052.3381327).
 
-<img src="https://github.com/linux-noah/noah/blob/master/images/screenshot.png" width="600">
+__NABI is experimental.__ Many Linux applications do not work, mostly due to
+missing system calls.
+
+<img src="images/screenshot.png" width="600">
+
+## Status
+
+**x86_64 only.** The VMM backend is VT-x, so NABI currently requires an Intel
+Mac. The Apple Silicon port is planned but not started — see
+[PORTING-arm64.md](PORTING-arm64.md) for the design and
+[INTEGRATION.md](INTEGRATION.md) for how NABI fits into the rest of mSL.
 
 ## Quick Start
 
-Noah is installed via Homebrew or MacPorts. On the first run, noah automatically downloads and installs a comprehensive linux environment in your home directory (by default, ubuntu 16.04 is installed in `~/.noah/tree`).
-macOS Sierra or higher is required.
-
-### Homebrew
-
 ```console
-$ brew install linux-noah/noah/noah
-$ noah
+$ make
+$ sudo make install
+$ nabi
 ```
-### MacPorts
 
-```console
-$ sudo port install noah
-$ noah
-```
+On first run, `nabi` downloads and installs a Linux environment in your home
+directory (by default Ubuntu, in `~/.nabi/tree`). A rootfs left by a previous
+`noah` install at `~/.noah/tree` is adopted rather than re-downloaded.
+
+The upstream Homebrew and MacPorts packages install the original `noah`, not
+NABI, and are not updated for this fork.
+
+## The mSL components
+
+| | |
+|---|---|
+| [mSL/NABI](.) | Linux ABI — runs Linux binaries |
+| mSL/FHS | Filesystem Hierarchy Standard layout on macOS |
+| mSL/ProcFS | a real `/proc` |
 
 ## Hacking
 

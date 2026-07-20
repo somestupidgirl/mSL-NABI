@@ -1,11 +1,11 @@
 # Use the remark-man node-js package to generate the documentation off the
 # GitHub markdown file.
 # See https://github.com/remarkjs/remark-man.
-noah.1: noah.md
-	node noah.js
+nabi.1: nabi.md
+	node nabi.js
 
-noah.ps: noah.1
-	groff -tmandoc noah.1 > noah.ps
+nabi.ps: nabi.1
+	groff -tmandoc nabi.1 > nabi.ps
 
 clean:
-	rm -f noah.ps
+	rm -f nabi.ps

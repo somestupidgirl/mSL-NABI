@@ -1,14 +1,14 @@
-.TH "NOAH" "1" "May 2018" "" ""
+.TH "NABI" "1" "" "" ""
 .SH "NAME"
-\fBnoah\fR - Linux ABI implementation (aka Execution Flavour) for OSX
+\fBnabi\fR - Linux ABI implementation (aka Execution Flavour) for macOS
 .SH "SYNOPSIS"
 .P
-\fBnoah\fR \fB-h\fR | \fB\fI-o output_file\fR\fR \[lB]\fI-w warning_file\fR\[rB] \[lB]\fI-s strace_file\fR\[rB] \fB-m /virtual/filesystem/root\fR \fBprogram\fR \[lB]\fI...\fR\[rB]
+\fBnabi\fR \fB-h\fR | \fB\fI-o output_file\fR\fR \[lB]\fI-w warning_file\fR\[rB] \[lB]\fI-s strace_file\fR\[rB] \fB-m /virtual/filesystem/root\fR \fBprogram\fR \[lB]\fI...\fR\[rB]
 .SH "DESCRIPTION"
 .P
-Noah implements Linux Application Binary Interface (ABI) for OSX through its Hypervisor Framework based on Intel(R) VTX technology.
+NABI implements the Linux Application Binary Interface (ABI) for macOS through the Hypervisor framework, based on Intel(R) VT-x technology.
 .P
-For convenience, a wrapper script written in PERL is provided for launching, as well as debugging the tool (it has to be edited manually). It is that script that is normally executed from path, providing \fI~/.noah/tree\fR as the virtual root.
+For convenience, a wrapper script written in PERL is provided for launching, as well as debugging the tool (it has to be edited manually). It is that script that is normally executed from path, providing \fI~/.nabi/tree\fR as the virtual root.
 .P
 On the first invocation the script uses noahstrap(1) to populate this virtual root with a default Ubuntu suite, see noahstrap-suites(1).
 .SS "Options"
@@ -26,7 +26,7 @@ On the first invocation the script uses noahstrap(1) to populate this virtual ro
  \fIprogram\fR the target program within the virtual FS root.
 .SH "FILES"
 .P
- \fI~/.noah/tree\fR
+ \fI~/.nabi/tree\fR
 .P
 .RS 2
 .nf

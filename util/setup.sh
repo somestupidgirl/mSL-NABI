@@ -2,7 +2,7 @@
 
 set -eu
 
-TREE_ROOT=${1-~/.noah/tree}
+TREE_ROOT=${1-~/.nabi/tree}
 SCRIPT_DIR=`dirname $0`
 
 sudo sh -c "$SCRIPT_DIR/mkgroup.pl | sort | uniq > $TREE_ROOT/etc/group"

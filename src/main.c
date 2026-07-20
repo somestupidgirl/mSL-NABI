@@ -672,7 +672,7 @@ main(int argc, char *argv[], char **envp)
       break;
     case 'h':
     default:
-      printf("Usage: noah -h | [-o output] [-w warning] [-s strace] -m /virtual/filesystem/root executable ...\n");
+      printf("Usage: nabi -h | [-o output] [-w warning] [-s strace] -m /virtual/filesystem/root executable ...\n");
       exit(0);
     }
   }

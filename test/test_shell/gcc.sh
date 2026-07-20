@@ -7,8 +7,8 @@ int main(){
 }
 EOF
 BIN=`mktemp noah-hello.XXXXXX`
-$NOAH /usr/bin/gcc $HELLO.c -o $BIN
-test -s $BIN -a "`$NOAH $BIN`" = "hello, world!"
+$NABI /usr/bin/gcc $HELLO.c -o $BIN
+test -s $BIN -a "`$NABI $BIN`" = "hello, world!"
 RET=$?
 rm -f $HELLO $HELLO.c $BIN
 exit $RET

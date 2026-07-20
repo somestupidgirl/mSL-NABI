@@ -2,11 +2,11 @@
 
 Run the following command (replace `0.2.3` with the version name you are going to publish with!):
 
-    $ util/release-engineering 0.2.3
+    $ util/release-engineering.sh 0.2.3
 
 The command includes the following actions...
 
-- Update version constants in noah.h
+- Update the version in the VERSION file
 - Commit and push the changes
 - Add a new tag and push it
 - Publish the new version on the homebrew repository

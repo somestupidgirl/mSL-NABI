@@ -1,17 +1,17 @@
-# noah(1) -- Linux ABI implementation (aka Execution Flavour) for OSX
+# nabi(1) -- Linux ABI implementation (aka Execution Flavour) for macOS
 
 ## SYNOPSIS
 
-`noah` `-h` \| [_-o output_file_] \[_-w warning_file_] \[_-s strace_file_] `-m /virtual/filesystem/root` `program` \[_..._]
+`nabi` `-h` \| [_-o output_file_] \[_-w warning_file_] \[_-s strace_file_] `-m /virtual/filesystem/root` `program` \[_..._]
 
 ## DESCRIPTION
 
-Noah implements Linux Application Binary Interface (ABI) for OSX through its
-Hypervisor Framework based on Intel(R) VTX technology.
+NABI implements the Linux Application Binary Interface (ABI) for macOS through
+the Hypervisor framework, based on Intel(R) VT-x technology.
 
 For convenience, a wrapper script written in PERL is provided for launching,
 as well as debugging the tool (it has to be edited manually). It is that script
-that is normally executed from path, providing _~/.noah/tree_ as the
+that is normally executed from path, providing _~/.nabi/tree_ as the
 virtual root.
 
 On the first invocation the script uses noahstrap(1) to populate this virtual
@@ -35,7 +35,7 @@ root with a default Ubuntu suite, see noahstrap-suites(1).
 
 ## FILES
 
-  _~/.noah/tree_
+  _~/.nabi/tree_
 
     Default virtual filesystem root.
 

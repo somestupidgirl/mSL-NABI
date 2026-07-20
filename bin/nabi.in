@@ -24,30 +24,45 @@ GetOptions(
   }
 ) or exit 1;
 
-my $noahdir = "$ENV{HOME}/.noah";
+my $nabidir = "$ENV{HOME}/.nabi";
 
-if (! -d $noahdir) {
-  mkdir $noahdir;
+if (! -d $nabidir) {
+  mkdir $nabidir;
 }
 
 if (! defined $root) {
-  $root = "$noahdir/tree";
+  $root = "$nabidir/tree";
+
+  # Adopt a rootfs left by the pre-rename install rather than provisioning a
+  # second one. It may be several gigabytes, and re-downloading it just because
+  # the command changed name would be a hostile way to ship a rename.
+  my $legacy = "$ENV{HOME}/.noah/tree";
+  if (! -d $root && -d $legacy) {
+    print "nabi: adopting the existing filesystem at ~/.noah/tree.\n";
+    if (system("/bin/mv", $legacy, $root) == 0) {
+      rmdir "$ENV{HOME}/.noah";
+    } else {
+      print "nabi: could not move it; using it where it is.\n";
+      $root = $legacy;
+    }
+  }
+
   if (! -d $root) {
-    prompt_yn("Noah is installing the initial filesystem in ~/.noah/tree. Proceed? [Y/n]", "y") or exit 1;
+    prompt_yn("nabi is installing the initial filesystem in ~/.nabi/tree. Proceed? [Y/n]", "y") or exit 1;
     system "sudo noahstrap -p ubuntu $root";
   }
 }
 
-my $noah = "@CMAKE_INSTALL_PREFIX@/libexec/noah";
+my $nabi = "@PREFIX@/libexec/nabi";
 
 if ($> != 0) {
-  my $st = stat $noah;
+  my $st = stat $nabi;
   if ($st->uid != 0 || ($st->mode & 04000) == 0) {
-    if (prompt_yn("Allow noah to run as root? It's necessary for privileged commands such as sudo.\nNoah is still under development, so please enable it at your own risk! [y/N]", "n")) {
-      system "sudo chown root:admin $noah";
-      system "sudo chmod u+s $noah";
+    if (prompt_yn("Allow nabi to run as root? It's necessary for privileged commands such as sudo.\nnabi is still under development, so please enable it at your own risk! [y/N]", "n")) {
+      system "sudo chown root:admin $nabi";
+      system "sudo chmod u+s $nabi";
     } else {
-      print "* Running noah as normal user... This may cause unstable behavior of sudo executed from inside noah.\n";
+      print "* Running nabi as normal user... This may cause unstable behavior of sudo executed from inside nabi.\n";
     }
   }
 }
@@ -65,8 +80,8 @@ if (defined $output) {
   $opts .= "--output $output ";
 }
 
-#system "lldb -- ${noah} -m $root $opts $init";
-system "${noah} -m $root $opts $init";
+#system "lldb -- ${nabi} -m $root $opts $init";
+system "${nabi} -m $root $opts $init";
 
 sub prompt_yn {
   my ($query, $default) = @_;
@@ -87,12 +102,12 @@ __END__
 
 =head1 NAME
 
-noah -- Darwin Subsystem for Linux
+nabi -- macOS Subsystem for Linux
 
 =head1 SYNOPSIS
 
-    noah [OPTION...]
-    noah [OPTION...] path_to_executable [ARG...]
+    nabi [OPTION...]
+    nabi [OPTION...] path_to_executable [ARG...]
 
 =head1 DESCRIPTION
 

@@ -83,7 +83,7 @@ do_setresuid(l_uid_t ruid, l_uid_t euid, l_uid_t suid)
       // The app is setting ruid to NON-root while euid is also NON-root.
       // To keep saved set-user-ID as 0, we have to set euid to 0 once due to bahavior of Darwin's setruid and setreuid.
       // To implement it, we need some kind of global lock for security. We haven't implemented that and just panic now.
-      panic("Noah cannot setruid to non-root while euid is non-root currently");
+      panic("NABI cannot setruid to non-root while euid is non-root currently");
 
       /* Implementation would be like this...
        acquire_global_lock_to_stop_other_threads();
@@ -109,7 +109,7 @@ do_setresuid(l_uid_t ruid, l_uid_t euid, l_uid_t suid)
       // The app is getting back from NON-root euid to NON-root saved user ID.
       // We have to get root privilege once for it.
       // To implement it, we need some kind of global lock for security. We haven't implement that and just panic now.
-      panic("Noah cannot setuid from non-root euid to non-root saved set-user-ID currently");
+      panic("NABI cannot setuid from non-root euid to non-root saved set-user-ID currently");
     }
     proc.cred.euid = euid;
     if (syswrap(seteuid(euid)) < 0) {
@@ -126,7 +126,7 @@ do_setresuid(l_uid_t ruid, l_uid_t euid, l_uid_t suid)
   return 0;
   
 cred_management_err:
-  panic("Cannot setresuid [%d, %d, %d] -> [%d, %d, %d]. Credential management bug of Noah. Host cred is [%d, %d, %d]",
+  panic("Cannot setresuid [%d, %d, %d] -> [%d, %d, %d]. Credential management bug of NABI. Host cred is [%d, %d, %d]",
           proc.cred.uid, proc.cred.euid, proc.cred.suid, ruid, euid, suid, getuid(), geteuid(), darwin_getsuid());
 }
 

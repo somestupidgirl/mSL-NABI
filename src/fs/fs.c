@@ -155,7 +155,7 @@ init_fileinfo(int rootfd)
       register_fd(i, flag & FD_CLOEXEC);
     } else {
       warnk("closing a file whose fd overlaps with vkern_fdtable, fd: %d\n", i);
-      fprintf(stderr, "Noah uses high file descriptor numbers as the system file descriptors. fd[%d] is closed because it overlaps with the system area.\n", i);
+      fprintf(stderr, "NABI uses high file descriptor numbers as the system file descriptors. fd[%d] is closed because it overlaps with the system area.\n", i);
       close(i);
     }
   }
