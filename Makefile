@@ -46,13 +46,17 @@ ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c
 # check-decode belongs here because it compiles its own -arch x86_64 binary and
 # needs no VT-x, so it is the one test that runs on the development machine.
 GOALS        := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
-NONBUILD     := clean uninstall migrate require-root check-decode
+NONBUILD     := clean uninstall migrate require-root check-decode check-arm64
 NEEDS_BUILD  := $(filter-out $(NONBUILD),$(GOALS))
 
 ifneq ($(NEEDS_BUILD),)
 ifeq ($(ARCH),arm64)
-    $(error arm64 is not ported yet - the VMM backend is VT-x only. See \
-      PORTING-arm64.md. To cross-build the Intel backend: make ARCH=x86_64)
+    # The backend exists (lib/vmm_arm64*.c, exercised by `make check-arm64`),
+    # but a whole nabi cannot link yet: mm.c, exec.c, signal.c and main.c still
+    # reach for VMCS fields and HV_X86_* registers. Phases 2b-4.
+    $(error arm64 is not ported yet - the backend exists but mm/exec/signal are \
+      still x86-only. See PORTING-arm64.md. Try: make check-arm64, or \
+      make ARCH=x86_64)
 else ifneq ($(ARCH),x86_64)
     $(error Unknown ARCH=$(ARCH). Use x86_64 (arm64 is not ported yet))
 endif
@@ -167,7 +171,7 @@ $(OUT):
 # Linux box at idylls.jp that has not existed for years. Running the tests does
 # not need it; regenerating them does.
 # ---------------------------------------------------------------------------
-check: check-decode check-guest
+check: check-decode check-arm64 check-guest
 
 # Unit tests for the exit decoder. These need no VT-x - they substitute the
 # accessors in vmm.h with a fake machine - so they run anywhere, including on
@@ -182,6 +186,28 @@ $(DECODE_TEST): test/arch/test_exit_decode.c lib/vmm_x86_exit.c $(HEADERS) | $(O
 
 check-decode: $(DECODE_TEST)
 	@$(DECODE_TEST)
+
+# Hardware test for the aarch64 backend. Creates a real VM, so it needs Apple
+# Silicon and the hypervisor entitlement - but unlike the x86 guest suite, it
+# does run on the development machine. Skips on Intel.
+ARM64_TEST := $(OUT)/test_arm64_backend
+
+$(ARM64_TEST): test/arch/test_arm64_backend.c lib/vmm_arm64.c lib/vmm_arm64_exit.c $(HEADERS) | $(OUT)
+	$(CC) -arch arm64 -std=gnu11 -O0 -g \
+	    -Wall -Wextra -Wno-unused-parameter -Iinclude \
+	    -o $@ test/arch/test_arm64_backend.c lib/vmm_arm64.c lib/vmm_arm64_exit.c \
+	    -framework Hypervisor
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
+
+# Depends on the binary directly rather than recursing: a -arch arm64 binary
+# cross-builds fine on Intel, it just cannot run there, so only execution is
+# guarded.
+check-arm64: $(ARM64_TEST)
+	@if [ "$(NATIVE_ARCH)" != "arm64" ]; then \
+		echo "SKIP: the aarch64 backend test needs Apple Silicon to run."; \
+	else \
+		$(ARM64_TEST); \
+	fi
 
 # The full guest suite. Runs prebuilt Linux binaries, so it needs a host that
 # can actually create a VM: an x86_64 build on an Intel Mac with VT-x.
@@ -249,4 +275,4 @@ require-built:
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all build debug check check-decode check-guest install migrate uninstall require-root require-built clean
+.PHONY: all build debug check check-decode check-arm64 check-guest install migrate uninstall require-root require-built clean

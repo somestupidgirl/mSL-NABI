@@ -2,9 +2,19 @@
 
 **Target:** run **aarch64** Linux binaries on arm64 macOS via Hypervisor.framework's ARM API.
 
-**Status:** Phase 0 complete and **passing** — the EL1 trampoline in §2 is
-validated on hardware (M5, macOS 26). See [spike/arm64-trap/](spike/arm64-trap/).
-Phases 1–6 not started.
+**Status** (M5, macOS 26):
+
+| Phase | State |
+|---|---|
+| 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
+| 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
+| 2 — arm64 VMM backend | **partial** — backend done and passing on hardware (`make check-arm64`); stage-1 tables, mm, exec and signal still x86-only |
+| 3–6 | not started |
+
+`make check` runs everything that can run on this machine. A whole arm64 `nabi`
+does not link yet: [src/mm/mm.c](src/mm/mm.c),
+[src/proc/exec.c](src/proc/exec.c), [src/ipc/signal.c](src/ipc/signal.c) and
+[src/main.c](src/main.c) still reach for VMCS fields and `HV_X86_*` registers.
 
 ---
 
@@ -213,6 +223,84 @@ into `is_page_aligned`, `kmap`'s `& 0xfff` masks, and mmap offset handling. Deci
 early: 4KiB guest granule (correct for the guest, requires host allocations be
 16KiB-aligned and sub-mapped) vs 16KiB (breaks guest binaries). **Recommend 4KiB.**
 
+**Measured (M5, macOS 26).** `hv_vm_map` rejects anything not 16KiB-granular, on
+*all three* arguments independently:
+
+| host addr | IPA | size | result |
+|---|---|---|---|
+| 16K | 16K | 16K | `HV_SUCCESS` |
+| 16K | 16K | 4K  | `HV_BAD_ARGUMENT` |
+| 4K  | 16K | 16K | `HV_BAD_ARGUMENT` |
+| 16K | 4K  | 16K | `HV_BAD_ARGUMENT` |
+| 16K | 16K | 8K  | `HV_BAD_ARGUMENT` |
+
+This confirms the recommendation but sharpens what it costs. The two translation
+stages have different minimum granules and that is not negotiable:
+
+- **Stage 2** (`hv_vm_map`, IPA → host) is **16KiB**, always.
+- **Stage 1** (the guest's own `TTBR0_EL1` tables, VA → IPA) is ours to define in
+  guest memory, so it can be **4KiB**. The guest sees 4KiB pages.
+
+The friction lands in [src/mm/mm.c](src/mm/mm.c), which today performs one
+`vmm_mmap` per guest region at 4KiB granularity. That no longer maps 1:1 onto a
+stage-2 call. A guest `mmap` of a single 4KiB page has three possible answers:
+
+1. **Round the stage-2 region up to 16KiB.** Simplest, and wrong: it publishes
+   three neighbouring pages of whatever the host allocation happens to hold into
+   the guest's address space. An isolation bug, not just an accounting one.
+2. **Sub-manage.** Allocate stage-2 in 16KiB chunks and hand out 4KiB stage-1
+   mappings within them, so the guest only ever sees pages it owns. Correct, and
+   it means `mm` grows a two-level notion of a region.
+3. **16KiB guest granule.** Removes the mismatch entirely, but Debian/Ubuntu
+   arm64 userland is built for 4KiB kernels and ELF `p_align` will not
+   necessarily cooperate.
+
+**Option 2.** It is the only one that is both correct and compatible, and the cost
+is confined to the allocator rather than spread across the syscall layer.
+
+Note also that `kmap` asserts `& 0xfff` and `__page_aligned` is
+`aligned(0x1000)`; both are 4KiB and both feed `vmm_mmap` directly, so both have
+to become 16KiB on the arm64 side regardless of what the guest sees.
+
+### 3.5.1 Cache coherency — net-new work with no x86 counterpart
+
+**The guest's instruction fetch does not see host writes to guest memory.**
+Found on hardware while bringing up the backend: rewriting the guest payload
+between tests silently re-ran the *previous* payload, and every assertion failed
+in a way that looked like the decoder was broken.
+
+Measured, on an M5:
+
+| after writing guest code | result |
+|---|---|
+| nothing | guest executes stale instructions |
+| `sys_dcache_flush` only | guest executes stale instructions |
+| `sys_icache_invalidate` only | correct |
+| both | correct |
+
+So the stale party is the instruction path, and `sys_icache_invalidate` — which
+issues the `dc cvau` / `ic ivau` pair — is both necessary and sufficient.
+Cleaning the data cache alone achieves nothing.
+
+x86 has no equivalent requirement; its caches are coherent with instruction
+fetch, which is why nothing in the existing tree does anything like this. Every
+place the host writes code the guest will execute now needs
+`vmm_arm64_sync_guest_code()`:
+
+- the EL1 trampoline (done, inside `vmm_arm64_install_trampoline`)
+- **the ELF loader** in [src/proc/exec.c](src/proc/exec.c) — Phase 3, and the
+  one that matters, since it writes the entire program image
+- the signal return trampoline — Phase 4 (§3.4)
+- anything the guest writes itself and then executes: JITs, and any program that
+  generates code. The guest's own `ic ivau` handles that case, but only if
+  `SCTLR_EL1` and the stage-2 attributes let it take effect, which is worth
+  re-checking once the MMU is on.
+
+The failure mode is worth naming because it is so misleading: the guest runs
+whatever bytes were previously at those addresses. That surfaces as arbitrary
+wrong behaviour — a stale syscall, a jump into garbage — rather than as anything
+that points at caching.
+
 ### 3.6 Segmentation, IDT, FPU, CPUID, TSC
 
 - `init_segment` ([src/mm/mm.c:74](src/mm/mm.c#L74)) — **delete**. ARM has no
@@ -306,7 +394,7 @@ ARM HVF, not VT-x, so it is not a usable signal here — and then
 So the x86 suite requires genuine Intel hardware, and Phase 1 landed without it.
 What that costs is discussed in §7.
 
-### Phase 2 — arm64 VMM backend
+### Phase 2 — arm64 VMM backend  *(backend landed; mm/exec/signal outstanding)*
 
 New `lib/vmm_arm64.c` implementing the Phase 1 interface on the ARM HVF API.
 New `include/arm64/vm.h` (translation-table descriptors, `TCR_EL1`/`MAIR_EL1`
