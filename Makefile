@@ -37,7 +37,7 @@ VERSION  := $(strip $(shell cat VERSION 2>/dev/null || echo 0.0.0))
 NATIVE_ARCH := $(shell uname -m)
 ARCH ?= $(NATIVE_ARCH)
 
-ARCH_SRCS := lib/vmm.c
+ARCH_SRCS := lib/vmm_x86.c
 
 # The arch guard is a parse-time $(error), so it has to be skipped for goals
 # that do not build anything - otherwise `make clean` and `sudo make uninstall`

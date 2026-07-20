@@ -8,6 +8,7 @@
 #include "types.h"
 #include "noah.h"
 #include "x86/vmx.h"
+#include "arch.h"
 
 struct vcpu_snapshot {
   uint64_t vcpu_reg[NR_X86_REG_LIST];
@@ -29,7 +30,7 @@ void vmm_restore_vcpu(struct vcpu_snapshot*);
 void vmm_create_vcpu(struct vcpu_snapshot *);
 void vmm_destroy_vcpu(void);
 
-int vmm_run(void);
+int vmm_enter(void);
 
 void vmm_read_register(hv_x86_reg_t, uint64_t *);
 void vmm_write_register(hv_x86_reg_t, uint64_t);
