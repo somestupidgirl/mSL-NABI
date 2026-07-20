@@ -37,14 +37,16 @@ VERSION  := $(strip $(shell cat VERSION 2>/dev/null || echo 0.0.0))
 NATIVE_ARCH := $(shell uname -m)
 ARCH ?= $(NATIVE_ARCH)
 
-ARCH_SRCS := lib/vmm_x86.c
+ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c
 
 # The arch guard is a parse-time $(error), so it has to be skipped for goals
-# that do not build anything - otherwise `make clean` and `sudo make uninstall`
-# would be unusable on an arm64 host, which is exactly where they are most
-# needed while the port is in progress.
+# that do not build the guest backend - otherwise `make clean`, `sudo make
+# uninstall` and `make check-decode` would all be unusable on an arm64 host,
+# which is exactly where they are most needed while the port is in progress.
+# check-decode belongs here because it compiles its own -arch x86_64 binary and
+# needs no VT-x, so it is the one test that runs on the development machine.
 GOALS        := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
-NONBUILD     := clean uninstall migrate require-root
+NONBUILD     := clean uninstall migrate require-root check-decode
 NEEDS_BUILD  := $(filter-out $(NONBUILD),$(GOALS))
 
 ifneq ($(NEEDS_BUILD),)
@@ -165,7 +167,31 @@ $(OUT):
 # Linux box at idylls.jp that has not existed for years. Running the tests does
 # not need it; regenerating them does.
 # ---------------------------------------------------------------------------
-check: build
+check: check-decode check-guest
+
+# Unit tests for the exit decoder. These need no VT-x - they substitute the
+# accessors in vmm.h with a fake machine - so they run anywhere, including on
+# Apple Silicon under Rosetta. This is the only automated check of the x86
+# backend available on a non-Intel host.
+DECODE_TEST := $(OUT)/test_exit_decode
+
+$(DECODE_TEST): test/arch/test_exit_decode.c lib/vmm_x86_exit.c $(HEADERS) | $(OUT)
+	$(CC) -arch x86_64 -std=gnu11 -O0 -g \
+	    -Wall -Wextra -Wno-unused-parameter -Iinclude \
+	    -o $@ test/arch/test_exit_decode.c lib/vmm_x86_exit.c
+
+check-decode: $(DECODE_TEST)
+	@$(DECODE_TEST)
+
+# The full guest suite. Runs prebuilt Linux binaries, so it needs a host that
+# can actually create a VM: an x86_64 build on an Intel Mac with VT-x.
+#
+# Note kern.hv_support is NOT a usable signal for that. An x86_64 process on
+# Apple Silicon reads it as 1 - it reports ARM HVF, not VT-x - and then
+# hv_vm_create() fails with HV_UNSUPPORTED. The architecture comparison is what
+# actually decides this; the sysctl check only catches an Intel host with
+# virtualisation disabled.
+check-guest: build
 	@if [ "$(ARCH)" != "$(NATIVE_ARCH)" ]; then \
 		echo "SKIP: built for $(ARCH) on a $(NATIVE_ARCH) host; the guest tests cannot run."; \
 	elif [ "$$(sysctl -n kern.hv_support 2>/dev/null)" != "1" ]; then \
@@ -223,4 +249,4 @@ require-built:
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all build debug check install migrate uninstall require-root require-built clean
+.PHONY: all build debug check check-decode check-guest install migrate uninstall require-root require-built clean

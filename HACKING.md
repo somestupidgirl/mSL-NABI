@@ -53,13 +53,28 @@ with it.
 ### Tests
 
 ```console
-$ make check
+$ make check          # both of the below
+$ make check-decode   # unit tests; run anywhere
+$ make check-guest    # full guest suite; needs an Intel Mac
 ```
 
-Runs `test/test.rb` against the prebuilt Linux guest binaries committed under
-`test/*/build/`. It needs a host that can actually run those guests (an x86_64
-build on an Intel Mac with VT-x) and *skips* with an explanation otherwise,
-rather than reporting a failure that says nothing about the code.
+**`check-decode`** exercises the VT-x exit decoder in `lib/vmm_x86_exit.c` with
+a fake machine, substituting the accessors declared in `vmm.h`. It creates no
+VM, so it runs on Apple Silicon too — it compiles its own `-arch x86_64` binary
+and executes under Rosetta. On a non-Intel host this is the only automated
+check of the x86 backend there is, which is why the decoder lives in its own
+translation unit, separate from the Hypervisor.framework plumbing.
+
+**`check-guest`** runs `test/test.rb` against the prebuilt Linux guest binaries
+committed under `test/*/build/`. It needs a host that can actually create a VM,
+and *skips* with an explanation otherwise rather than reporting a failure that
+says nothing about the code.
+
+Be aware that `kern.hv_support` is **not** a usable test for that. An x86_64
+process on Apple Silicon reads it as `1` — it reports ARM HVF, not VT-x — and
+then `hv_vm_create()` returns `HV_UNSUPPORTED`. Rosetta translates x86 userland
+instructions; it does not virtualise. So the guest suite genuinely requires
+Intel hardware, and there is no way around that on an M-series machine.
 
 Note that `test/test.mk`, which **rebuilds** those guest binaries, shells out to
 a Linux box at `idylls.jp` that has not existed for years. Running the tests

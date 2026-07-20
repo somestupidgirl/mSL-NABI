@@ -294,9 +294,17 @@ Rewrite `main_loop` ([src/main.c:200](src/main.c#L200)) against `struct vm_exit`
 instead of raw `VMX_REASON_*`. Rewrite `handle_syscall`
 ([src/main.c:56](src/main.c#L56)) against `VREG_SYSNR`/`VREG_ARG*`.
 
-**Test:** the existing x86 suite in [test/](test/) must still pass on an Intel Mac
-(or under Rosetta, if `kern.hv_support` permits). This is the only phase with a
-regression baseline, so it is worth the discipline.
+**Test:** ~~the existing x86 suite must still pass on an Intel Mac (or under
+Rosetta, if `kern.hv_support` permits)~~ — **not achievable, and the Rosetta
+half was wrong.**
+
+Rosetta translates x86 userland instructions but exposes no VT-x. An x86_64
+process on Apple Silicon reads `kern.hv_support` as **1** — that sysctl reports
+ARM HVF, not VT-x, so it is not a usable signal here — and then
+`hv_vm_create()` returns `0x4`, `HV_UNSUPPORTED`. Measured, not inferred.
+
+So the x86 suite requires genuine Intel hardware, and Phase 1 landed without it.
+What that costs is discussed in §7.
 
 ### Phase 2 — arm64 VMM backend
 
@@ -376,7 +384,42 @@ aarch64. Retarget [test/misc/xmm0.s](test/misc/xmm0.s) to FPSIMD or drop it.
 This is a large project. Phases 0–2 are the hard, uncertain part — everything after
 is substantial but well-understood work. The upstream project is unmaintained and
 last targeted macOS Sierra, so expect unrelated bitrot against macOS 26 on top of
-the porting work itself.
+the porting work itself. (That prediction held: the tree did not compile at all
+under clang 21 / macOS 26 before the port started.)
 
-The single most valuable next step is **Phase 0**. It is a day of work and it
-either validates or invalidates the entire design.
+Phase 0 was the single most valuable step and it has been done. The design is
+validated on hardware, which removes the project's largest unknown.
+
+---
+
+## 7. The x86 build is a reference, not a test
+
+Phase 1 was specified as "no behaviour change, verifiable against the x86 suite."
+That verification did not happen and, on Apple Silicon, cannot: `hv_vm_create()`
+returns `HV_UNSUPPORTED` under Rosetta (§4, Phase 1). The x86 suite needs real
+Intel hardware.
+
+**What this means for the decision to keep both architectures.** That decision was
+taken on the rationale that the x86 build is "the only regression baseline the
+port has." Half of that rationale is now gone: it is a *compile* baseline and a
+*reference implementation*, but not a runnable test. The other half stands, and it
+is the important half — x86 is the only complete, working description of what each
+syscall path is supposed to do, and the arm64 code is being written by reading it.
+
+**What the residual risk actually is.** A Phase 1 regression in the x86 build harms
+nobody directly, because nobody can execute that build. The risk is indirect and
+worth naming precisely: if the refactor changed x86 *semantics*, and someone later
+reads the x86 path as the specification for the arm64 path, the change propagates
+into code that does run. That is the reason the Phase 1 audit was done
+case-by-case against the original rather than by eyeballing the diff, and the
+reason the two deviations it found are documented in the commit rather than
+quietly folded in.
+
+**What was actually verified in Phase 1:** that it compiles warning-free in both
+build modes; that every vmexit reason and exception vector the original handled is
+still handled; that `main_loop` and `handle_syscall` contain no architecture-
+specific references; and that the binary starts. Not verified: that a single guest
+instruction still executes correctly.
+
+Anyone who acquires an Intel Mac should run `make check` against the Phase 1 commit
+before trusting the x86 path as a specification.
