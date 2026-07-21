@@ -72,6 +72,19 @@ void handle_signal(void);
 bool has_sigpending(void);
 int send_signal(pid_t pid, int sig);
 
+/* The architecture-specific half of signal delivery, in signal_x86.c /
+ * signal_arm64.c. The signal frame is entirely arch-shaped: the x86 sigcontext
+ * is 16 named GPRs plus segments and uses SA_RESTORER; the aarch64 one is
+ * regs[31]/sp/pc/pstate with an fpsimd chain and a vDSO-style sigreturn
+ * trampoline. arch_setup_sigframe builds the frame and points the vCPU at the
+ * handler; arch_rt_sigreturn restores from it. */
+/* Neutral sigaltstack helpers, shared with the arch signal-frame code. */
+void reset_sas(void);
+l_int sas_ss_flags(uint64_t rsp);
+
+int arch_setup_sigframe(int signum);
+uint64_t arch_rt_sigreturn(void);
+
 /* task related data */
 
 struct task {

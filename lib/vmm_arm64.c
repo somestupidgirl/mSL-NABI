@@ -317,3 +317,43 @@ vmm_arm64_enter_el0(gaddr_t pc, gaddr_t sp, gaddr_t el1_eret_stub)
   vmm_arm64_write_reg(HV_REG_PC, el1_eret_stub);
   vmm_arm64_write_reg(HV_REG_CPSR, PSR_EL1);
 }
+
+/* ------------------------------------------------ snapshot / restore (Phase 4)
+ *
+ * fork and multi-threaded clone snapshot a vCPU and restore it into a fresh VM.
+ * On x86 (vmm_x86.c) this walks a register list, the masked VMCS fields and the
+ * fxsave area. The aarch64 equivalent - x0-x30, SP, PC, PSTATE, TPIDR_EL0 and
+ * the FPSIMD file - is Phase 4, alongside the real struct vcpu_snapshot. None
+ * of it is on the path to loading and running a single-threaded binary, so for
+ * now these are honest stubs: fork will hit them and stop loudly rather than
+ * corrupt guest state.
+ */
+void
+vmm_snapshot_vcpu(struct vcpu_snapshot *snapshot)
+{
+  (void) snapshot;
+  panic("vmm_snapshot_vcpu: fork/clone snapshot not implemented for arm64 yet "
+        "(Phase 4). See PORTING-arm64.md.");
+}
+
+void
+vmm_snapshot(struct vmm_snapshot *snapshot)
+{
+  (void) snapshot;
+  panic("vmm_snapshot: fork not implemented for arm64 yet (Phase 4).");
+}
+
+void
+vmm_restore_vcpu(struct vcpu_snapshot *snapshot)
+{
+  (void) snapshot;
+  panic("vmm_restore_vcpu: fork/clone restore not implemented for arm64 yet "
+        "(Phase 4).");
+}
+
+void
+vmm_reentry(struct vmm_snapshot *snapshot)
+{
+  (void) snapshot;
+  panic("vmm_reentry: fork not implemented for arm64 yet (Phase 4).");
+}

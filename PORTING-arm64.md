@@ -2,10 +2,24 @@
 
 **Target:** run **aarch64** Linux binaries on arm64 macOS via Hypervisor.framework's ARM API.
 
-**Status** (M5, macOS 26):
+**Status** (M5, macOS 26): **a native arm64 `nabi` links and runs.**
 
 | Phase | State |
 |---|---|
+| 0 — trap mechanism | **done**, hardware-validated, [spike/arm64-trap/](spike/arm64-trap/) |
+| 1 — arch abstraction | **done**, [include/arch.h](include/arch.h) |
+| 2 — arm64 VMM backend | **done** — backend, stage-1 translation, two-stage `vmm_mmap`, guest boot to EL0, all hardware-verified (`make check-arm64`) |
+| 3 — syscall table + ABI | **partial** — exec.c ported, TLS via `TPIDR_EL0`, `EM_AARCH64` gate. Syscall table still the x86-64 numbering (§3.2); `ppoll`/`epoll_*`/`statx` unimplemented |
+| 4 — signals, fork, threads | **stubbed** — signal delivery (signal_arm64.c) and fork/clone snapshot (vmm_arm64.c) panic loudly; the real implementations are net-new |
+| 5–6 | rootfs, dynamic linking, test port — not started |
+
+`make ARCH=arm64` now produces a signed arm64 binary. What it can do today is bounded
+by the Phase 4 stubs: a **single-threaded, signal-free** aarch64 guest can be loaded and
+run to exit. Anything that forks, spawns a thread, or takes a delivered signal hits a
+stub and stops with a clear message. The syscall table is also still x86-64-numbered
+(§3.2), so real glibc binaries need that regenerated first.
+
+---|---|
 | 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
 | 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c/main.c arch-split, exec.c ported, two-stage `vmm_mmap` done. **signal.c is the sole remaining blocker.** `vmm_munmap` stubbed |

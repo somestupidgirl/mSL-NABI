@@ -416,16 +416,3 @@ main(void)
   printf("%s\n", failures == 0 ? "PASS" : "FAIL");
   return failures != 0;
 }
-
-/*
- * vmm_create_vcpu() restores from a snapshot when given one; this test never
- * passes one, so the restore path is unreachable here. Snapshot/restore is
- * Phase 4 work (fork), so stub it rather than pull in a half-built
- * implementation.
- */
-void
-vmm_restore_vcpu(struct vcpu_snapshot *snapshot)
-{
-  (void) snapshot;
-  panic("vmm_restore_vcpu is not implemented for arm64 yet (Phase 4)");
-}

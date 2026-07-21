@@ -61,7 +61,6 @@ panic(const char *fmt, ...)
   printf("  PANIC: "); vprintf(fmt, ap); printf("\n");
   va_end(ap); exit(2);
 }
-void vmm_restore_vcpu(struct vcpu_snapshot *s) { (void) s; panic("Phase 4"); }
 
 /* pt_arm64 helpers the test uses to place code/stack, as exec.c's do_mmap will. */
 void *pt_alloc_and_map(gaddr_t va, int prot);

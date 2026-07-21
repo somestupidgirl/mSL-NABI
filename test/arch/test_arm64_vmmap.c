@@ -79,7 +79,6 @@ panic(const char *fmt, ...)
   printf("  PANIC: "); vprintf(fmt, ap); printf("\n");
   va_end(ap); exit(2);
 }
-void vmm_restore_vcpu(struct vcpu_snapshot *s) { (void) s; panic("Phase 4"); }
 
 static uint32_t *code_hva;
 static void     *vector_hva;

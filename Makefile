@@ -41,9 +41,9 @@ ARCH ?= $(NATIVE_ARCH)
 # list is what a whole nabi will link once mm/exec/signal/main are ported. Its
 # pieces are compiled and run in isolation now by `make check-arm64`.
 ifeq ($(ARCH),x86_64)
-    ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c src/mm/mm_x86.c src/main_x86.c
+    ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c src/mm/mm_x86.c src/main_x86.c src/ipc/signal_x86.c
 else
-    ARCH_SRCS := lib/vmm_arm64.c lib/vmm_arm64_exit.c src/mm/mm_arm64.c src/mm/pt_arm64.c src/main_arm64.c
+    ARCH_SRCS := lib/vmm_arm64.c lib/vmm_arm64_exit.c src/mm/mm_arm64.c src/mm/pt_arm64.c src/main_arm64.c src/ipc/signal_arm64.c
 endif
 
 # The arch guard is a parse-time $(error), so it has to be skipped for goals
@@ -58,14 +58,14 @@ NEEDS_BUILD  := $(filter-out $(NONBUILD),$(GOALS))
 
 ifneq ($(NEEDS_BUILD),)
 ifeq ($(ARCH),arm64)
-    # The backend exists (lib/vmm_arm64*.c, exercised by `make check-arm64`),
-    # but a whole nabi cannot link yet: mm.c, exec.c, signal.c and main.c still
-    # reach for VMCS fields and HV_X86_* registers. Phases 2b-4.
-    $(error arm64 is not ported yet - the backend exists but mm/exec/signal are \
-      still x86-only. See PORTING-arm64.md. Try: make check-arm64, or \
-      make ARCH=x86_64)
+    # A whole nabi links now. Guest signal delivery and fork/clone are still
+    # stubbed (they panic loudly) - see signal_arm64.c and the snapshot stubs in
+    # vmm_arm64.c - so a single-threaded, signal-free binary can run but much
+    # cannot yet. See PORTING-arm64.md.
+    $(warning arm64: building. Signal delivery and fork/clone are stubbed \
+      (Phase 4); a single-threaded signal-free guest runs, more does not yet.)
 else ifneq ($(ARCH),x86_64)
-    $(error Unknown ARCH=$(ARCH). Use x86_64 (arm64 is not ported yet))
+    $(error Unknown ARCH=$(ARCH). Use arm64 or x86_64)
 endif
 endif
 

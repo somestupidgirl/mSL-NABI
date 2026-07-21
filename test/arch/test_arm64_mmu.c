@@ -102,12 +102,6 @@ panic(const char *fmt, ...)
   exit(2);
 }
 
-void
-vmm_restore_vcpu(struct vcpu_snapshot *s)
-{
-  (void) s;
-  panic("vmm_restore_vcpu is Phase 4 work");
-}
 
 /* --------------------------------------------------------------- setup */
 
