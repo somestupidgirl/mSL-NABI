@@ -54,6 +54,13 @@ gaddr_t alloc_region(size_t len);
 noreturn void die_with_forcedsig(int sig);
 void main_loop(int return_on_sigret);
 
+/* Per-architecture guest-machine bring-up, defined in main_x86.c / main_arm64.c.
+ * init_vkernel_machine sets up the vCPU control state (VMCS + segments on x86,
+ * page tables + EL1 trampoline on arm64); vmm_start_guest turns translation on
+ * and enters the guest where that differs by architecture (a no-op on x86). */
+void init_vkernel_machine(void);
+void vmm_start_guest(void);
+
 /* signal */
 
 #include "linux/signal.h"

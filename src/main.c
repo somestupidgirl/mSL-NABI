@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <cpuid.h>
 #include <getopt.h>
 #include <string.h>
 #include <sys/syslimits.h>
@@ -16,23 +15,10 @@
 #include "noah.h"
 #include "syscall.h"
 #include "linux/errno.h"
-#include "x86/irq_vectors.h"
-#include "x86/specialreg.h"
-#include "x86/vm.h"
-#include "x86/vmx.h"
 #include <sys/sysctl.h>
 
 #include <mach-o/dyld.h>
 
-static int
-get_cpuid_count (unsigned int leaf,
-		 unsigned int subleaf,
-		 unsigned int *eax, unsigned int *ebx,
-		 unsigned int *ecx, unsigned int *edx)
-{
-    __cpuid_count(leaf, subleaf, *eax, *ebx, *ecx, *edx);
-    return 1;
-}
 
 static int
 handle_syscall(void)
@@ -134,135 +120,6 @@ main_loop(int return_on_sigret)
   __builtin_unreachable();
 }
 
-void
-init_vmcs()
-{
-  uint64_t vmx_cap_pinbased, vmx_cap_procbased, vmx_cap_procbased2, vmx_cap_entry, vmx_cap_exit;
-
-  hv_vmx_read_capability(HV_VMX_CAP_PINBASED, &vmx_cap_pinbased);
-  hv_vmx_read_capability(HV_VMX_CAP_PROCBASED, &vmx_cap_procbased);
-  hv_vmx_read_capability(HV_VMX_CAP_PROCBASED2, &vmx_cap_procbased2);
-  hv_vmx_read_capability(HV_VMX_CAP_ENTRY, &vmx_cap_entry);
-  hv_vmx_read_capability(HV_VMX_CAP_EXIT, &vmx_cap_exit);
-
-  /* set up vmcs misc */
-
-#define cap2ctrl(cap,ctrl) (((ctrl) | ((cap) & 0xffffffff)) & ((cap) >> 32))
-
-  vmm_write_vmcs(VMCS_CTRL_PIN_BASED, cap2ctrl(vmx_cap_pinbased, 0));
-  vmm_write_vmcs(VMCS_CTRL_CPU_BASED, cap2ctrl(vmx_cap_procbased,
-                                               CPU_BASED_HLT |
-                                               CPU_BASED_CR8_LOAD |
-                                               CPU_BASED_CR8_STORE));
-  vmm_write_vmcs(VMCS_CTRL_CPU_BASED2, cap2ctrl(vmx_cap_procbased2, 0));
-  vmm_write_vmcs(VMCS_CTRL_VMENTRY_CONTROLS,  cap2ctrl(vmx_cap_entry,
-                                                       VMENTRY_LOAD_EFER |
-                                                       VMENTRY_GUEST_IA32E));
-  vmm_write_vmcs(VMCS_CTRL_VMEXIT_CONTROLS, cap2ctrl(vmx_cap_exit, VMEXIT_LOAD_EFER));
-  vmm_write_vmcs(VMCS_CTRL_EXC_BITMAP, 0xffffffff);
-  vmm_write_vmcs(VMCS_CTRL_CR0_SHADOW, 0);
-  vmm_write_vmcs(VMCS_CTRL_CR4_MASK, 0);
-  vmm_write_vmcs(VMCS_CTRL_CR4_SHADOW, 0);
-}
-
-void
-init_special_regs()
-{
-  uint64_t cr0;
-  vmm_read_vmcs(VMCS_GUEST_CR0, &cr0);
-  vmm_write_vmcs(VMCS_GUEST_CR0, (cr0 & ~CR0_EM) | CR0_MP);
-
-  uint64_t cr4;
-  vmm_read_vmcs(VMCS_GUEST_CR4, &cr4);
-  vmm_write_vmcs(VMCS_GUEST_CR4, cr4 | CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_VMXE | CR4_OSXSAVE);
-
-  uint64_t efer;
-  vmm_read_vmcs(VMCS_GUEST_IA32_EFER, &efer);
-  vmm_write_vmcs(VMCS_GUEST_IA32_EFER, efer | EFER_LME | EFER_LMA);
-}
-
-struct gate_desc idt[256] __page_aligned;
-gaddr_t idt_ptr;
-
-void
-init_idt()
-{
-  idt_ptr = kmap(idt, 0x1000, HV_MEMORY_READ | HV_MEMORY_WRITE);
-
-  vmm_write_vmcs(VMCS_GUEST_IDTR_BASE, idt_ptr);
-  vmm_write_vmcs(VMCS_GUEST_IDTR_LIMIT, sizeof idt);
-}
-
-void
-init_regs()
-{
-  /* set up cpu regs */
-  vmm_write_register(HV_X86_RFLAGS, 0x2);
-  unsigned int eax, ebx, ecx, edx;
-  get_cpuid_count(0x0d, 0x0, &eax, &ebx, &ecx, &edx);
-  if (eax & XCR0_SSE_STATE) {
-    uint64_t xcr0;
-    vmm_read_register(HV_X86_XCR0, &xcr0);
-    vmm_write_register(HV_X86_XCR0, xcr0 | XCR0_SSE_STATE);
-  }
-}
-
-void
-init_msr()
-{
-  vmm_enable_native_msr(MSR_TIME_STAMP_COUNTER, 1);
-  vmm_enable_native_msr(MSR_TSC_AUX, 1);
-  vmm_enable_native_msr(MSR_KERNEL_GS_BASE, 1);
-}
-
-void
-init_fpu()
-{
-  struct fxregs_state {
-    uint16_t cwd; /* Control Word                    */
-    uint16_t swd; /* Status Word                     */
-    uint16_t twd; /* Tag Word                        */
-    uint16_t fop; /* Last Instruction Opcode         */
-    union {
-      struct {
-        uint64_t rip; /* Instruction Pointer             */
-        uint64_t rdp; /* Data Pointer                    */
-      };
-      struct {
-        uint32_t fip; /* FPU IP Offset                   */
-        uint32_t fcs; /* FPU IP Selector                 */
-        uint32_t foo; /* FPU Operand Offset              */
-        uint32_t fos; /* FPU Operand Selector            */
-      };
-    };
-    uint32_t mxcsr;       /* MXCSR Register State */
-    uint32_t mxcsr_mask;  /* MXCSR Mask           */
-    uint32_t st_space[32]; /* 8*16 bytes for each FP-reg = 128 bytes */
-    uint32_t xmm_space[64]; /* 16*16 bytes for each XMM-reg = 256 bytes */
-    uint32_t __padding[12];
-    union {
-      uint32_t __padding1[12];
-      uint32_t sw_reserved[12];
-    };
-  } __attribute__((aligned(16))) fx;
-
-  /* emulate 'fninit'
-   * - http://www.felixcloutier.com/x86/FINIT:FNINIT.html
-   */
-  fx.cwd = 0x037f;
-  fx.swd = 0;
-  fx.twd = 0xffff;
-  fx.fop = 0;
-  fx.rip = 0;
-  fx.rdp = 0;
-
-  /* default configuration for the SIMD core */
-  fx.mxcsr = 0x1f80;
-  fx.mxcsr_mask = 0;
-
-  vmm_write_fpstate(&fx, sizeof fx);
-}
-
 static void
 init_first_proc(const char *root)
 {
@@ -299,14 +156,9 @@ init_vkernel(const char *root)
 {
   init_mm(&vkern_mm);
   init_shm_malloc();
-  init_vmcs();
-  init_msr();
-  init_page();
-  init_special_regs();
-  init_segment();
-  init_idt();
-  init_regs();
-  init_fpu();
+  /* All the arch-specific vCPU and guest-machine setup - VMCS controls and
+   * segments on x86, page tables and the EL1 trampoline on arm64. */
+  init_vkernel_machine();
 
   init_first_proc(root);
 }
@@ -440,6 +292,12 @@ main(int argc, char *argv[], char **envp)
     perror("Error");
     exit(1);
   }
+
+  /* On arm64 this turns on stage-1 translation and drops the vCPU to EL0 at the
+   * entry point do_exec set; on x86 the guest is already runnable and it does
+   * nothing. Must come after do_exec (which maps the image and sets PC/SP) and
+   * before the guest first runs. */
+  vmm_start_guest();
 
   main_loop(0);
 

@@ -8,15 +8,16 @@
 |---|---|
 | 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
-| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c arch-split; two-stage `vmm_mmap` done (§3.5.2); exec.c ported. main.c/signal.c outstanding; `vmm_munmap` stubbed |
+| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c/main.c arch-split, exec.c ported, two-stage `vmm_mmap` done. **signal.c is the sole remaining blocker.** `vmm_munmap` stubbed |
 | 3–6 | not started |
 
 `make check` runs everything that can run on this machine. A whole arm64 `nabi`
-does not link yet, but the set of blocking files is down to two:
-[src/main.c](src/main.c) (guest machine setup - init_vmcs/init_regs/init_fpu and
-the VMCS control fields) and [src/ipc/signal.c](src/ipc/signal.c) (signal frames,
-Phase 4). Everything else compiles for arm64 - including exec.c's ELF loader -
-through the neutral interface in [include/arch.h](include/arch.h).
+does not link yet, but **[src/ipc/signal.c](src/ipc/signal.c) is the only
+remaining blocker** (signal frames, Phase 4). Everything else compiles for arm64.
+The production startup path - init_vkernel_machine() then vmm_start_guest() in
+[src/main_arm64.c](src/main_arm64.c) - is verified on hardware (`make
+check-arm64`): it boots a guest to EL0 through page tables, the trampoline and an
+MMU-enable, the way main.c will.
 
 ---
 

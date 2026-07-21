@@ -74,6 +74,9 @@
 #define VBAR_ALIGN            0x800
 #define VEC_LOWER64_SYNC      0x400
 #define VEC_TABLE_SIZE        0x800
+/* A one-shot eret stub past the vector table, used to drop from EL1 to EL0 at
+ * guest startup. Lives in the same vector page. */
+#define VEC_BOOT_OFF          0x900
 
 /* ------------------------------------------------------- instructions */
 /*

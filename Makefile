@@ -41,9 +41,9 @@ ARCH ?= $(NATIVE_ARCH)
 # list is what a whole nabi will link once mm/exec/signal/main are ported. Its
 # pieces are compiled and run in isolation now by `make check-arm64`.
 ifeq ($(ARCH),x86_64)
-    ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c src/mm/mm_x86.c
+    ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c src/mm/mm_x86.c src/main_x86.c
 else
-    ARCH_SRCS := lib/vmm_arm64.c lib/vmm_arm64_exit.c src/mm/mm_arm64.c src/mm/pt_arm64.c
+    ARCH_SRCS := lib/vmm_arm64.c lib/vmm_arm64_exit.c src/mm/mm_arm64.c src/mm/pt_arm64.c src/main_arm64.c
 endif
 
 # The arch guard is a parse-time $(error), so it has to be skipped for goals
@@ -227,11 +227,20 @@ $(VMMAP_TEST): test/arch/test_arm64_vmmap.c src/mm/pt_arm64.c lib/vmm_arm64.c li
 	    -framework Hypervisor
 	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
 
-check-arm64: $(ARM64_TEST) $(MMU_TEST) $(VMMAP_TEST)
+BOOT_TEST := $(OUT)/test_arm64_boot
+
+$(BOOT_TEST): test/arch/test_arm64_boot.c src/main_arm64.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c $(HEADERS) | $(OUT)
+	$(CC) -arch arm64 -std=gnu11 -O0 -g \
+	    -Wall -Wextra -Wno-unused-parameter -Iinclude \
+	    -o $@ test/arch/test_arm64_boot.c src/main_arm64.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c \
+	    -framework Hypervisor
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
+
+check-arm64: $(ARM64_TEST) $(MMU_TEST) $(VMMAP_TEST) $(BOOT_TEST)
 	@if [ "$(NATIVE_ARCH)" != "arm64" ]; then \
 		echo "SKIP: the aarch64 backend tests need Apple Silicon to run."; \
 	else \
-		$(ARM64_TEST) && $(MMU_TEST) && $(VMMAP_TEST); \
+		$(ARM64_TEST) && $(MMU_TEST) && $(VMMAP_TEST) && $(BOOT_TEST); \
 	fi
 
 # The full guest suite. Runs prebuilt Linux binaries, so it needs a host that
