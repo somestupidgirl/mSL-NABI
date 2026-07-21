@@ -8,7 +8,7 @@
 |---|---|
 | 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
-| 2 — arm64 VMM backend | **partial** — backend done and passing on hardware (`make check-arm64`); stage-1 tables, mm, exec and signal still x86-only |
+| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c/exec/signal integration outstanding |
 | 3–6 | not started |
 
 `make check` runs everything that can run on this machine. A whole arm64 `nabi`
@@ -255,8 +255,10 @@ stage-2 call. A guest `mmap` of a single 4KiB page has three possible answers:
    arm64 userland is built for 4KiB kernels and ELF `p_align` will not
    necessarily cooperate.
 
-**Option 2.** It is the only one that is both correct and compatible, and the cost
-is confined to the allocator rather than spread across the syscall layer.
+**Option 2, and it is now built** — [src/mm/pt_arm64.c](src/mm/pt_arm64.c),
+proven on hardware by `make check-arm64` (the read-only-4KiB-page-inside-an-RWX-
+16KiB-chunk test is the one that matters). The cost stayed confined to the
+allocator, as predicted.
 
 Note also that `kmap` asserts `& 0xfff` and `__page_aligned` is
 `aligned(0x1000)`; both are 4KiB and both feed `vmm_mmap` directly, so both have

@@ -4,6 +4,18 @@
 #include <pthread.h>
 #include <stdbool.h>
 
+/*
+ * For hv_memory_flags_t, used in the prototypes below. Previously this header
+ * relied on whoever included it having pulled in a Hypervisor header first,
+ * which held only because vmm.h did so - and broke as soon as an arm64 file
+ * included mm.h on its own.
+ *
+ * The umbrella header, not hv_types.h: that one is inside `#ifdef __x86_64__`,
+ * and the arm64 definition lives in hv_vm_types.h behind `#ifdef __arm64__`.
+ * Hypervisor.h resolves to whichever applies.
+ */
+#include <Hypervisor/Hypervisor.h>
+
 #include "types.h"
 #include "noah.h"
 #include "util/list.h"

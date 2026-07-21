@@ -11,6 +11,8 @@
 
 #include <stdint.h>
 
+#include "page.h"
+
 /* ------------------------------------------------------------------ PSTATE */
 /*
  * SPSR / CPSR values. M[3:0] selects the exception level and stack pointer:

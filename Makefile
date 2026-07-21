@@ -199,14 +199,23 @@ $(ARM64_TEST): test/arch/test_arm64_backend.c lib/vmm_arm64.c lib/vmm_arm64_exit
 	    -framework Hypervisor
 	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
 
-# Depends on the binary directly rather than recursing: a -arch arm64 binary
-# cross-builds fine on Intel, it just cannot run there, so only execution is
+MMU_TEST := $(OUT)/test_arm64_mmu
+
+$(MMU_TEST): test/arch/test_arm64_mmu.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c $(HEADERS) | $(OUT)
+	$(CC) -arch arm64 -std=gnu11 -O0 -g \
+	    -Wall -Wextra -Wno-unused-parameter -Iinclude \
+	    -o $@ test/arch/test_arm64_mmu.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c \
+	    -framework Hypervisor
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
+
+# Depends on the binaries directly rather than recursing: -arch arm64 binaries
+# cross-build fine on Intel, they just cannot run there, so only execution is
 # guarded.
-check-arm64: $(ARM64_TEST)
+check-arm64: $(ARM64_TEST) $(MMU_TEST)
 	@if [ "$(NATIVE_ARCH)" != "arm64" ]; then \
-		echo "SKIP: the aarch64 backend test needs Apple Silicon to run."; \
+		echo "SKIP: the aarch64 backend tests need Apple Silicon to run."; \
 	else \
-		$(ARM64_TEST); \
+		$(ARM64_TEST) && $(MMU_TEST); \
 	fi
 
 # The full guest suite. Runs prebuilt Linux binaries, so it needs a host that
