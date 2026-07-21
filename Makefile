@@ -306,7 +306,16 @@ require-built:
 	@[ -x "$(NABI)" ] && [ -x "$(WRAPPER)" ] || \
 		{ echo "error: not built. Run 'make' first."; exit 1; }
 
+# Regenerate the aarch64 syscall table from a kernel asm-generic/unistd.h.
+# Manual: it needs the kernel header, so it is not part of the build. The
+# generated include/syscall_arm64.h is committed and audited (see the report
+# the generator prints). Point UNISTD at the header for your target kernel.
+UNISTD ?= /tmp/unistd_generic.h
+syscalls:
+	python3 util/gen_syscall_table.py $(UNISTD) include/syscall_x86.h \
+	    > include/syscall_arm64.h
+
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all build debug check check-decode check-arm64 check-guest install migrate uninstall require-root require-built clean
+.PHONY: all build debug check check-decode check-arm64 check-guest syscalls install migrate uninstall require-root require-built clean

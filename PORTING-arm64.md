@@ -9,15 +9,15 @@
 | 0 — trap mechanism | **done**, hardware-validated, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h) |
 | 2 — arm64 VMM backend | **done** — backend, stage-1 translation, two-stage `vmm_mmap`, guest boot to EL0, all hardware-verified (`make check-arm64`) |
-| 3 — syscall table + ABI | **partial** — exec.c ported, TLS via `TPIDR_EL0`, `EM_AARCH64` gate. Syscall table still the x86-64 numbering (§3.2); `ppoll`/`epoll_*`/`statx` unimplemented |
+| 3 — syscall table + ABI | **mostly done** — syscall table generated for aarch64 numbering (§3.2), exec.c ported, TLS via `TPIDR_EL0`, `EM_AARCH64` gate. `ppoll`/`epoll_*`/`statx` still unimplemented (handlers, not numbering) |
 | 4 — signals, fork, threads | **stubbed** — signal delivery (signal_arm64.c) and fork/clone snapshot (vmm_arm64.c) panic loudly; the real implementations are net-new |
 | 5–6 | rootfs, dynamic linking, test port — not started |
 
 `make ARCH=arm64` now produces a signed arm64 binary. What it can do today is bounded
 by the Phase 4 stubs: a **single-threaded, signal-free** aarch64 guest can be loaded and
 run to exit. Anything that forks, spawns a thread, or takes a delivered signal hits a
-stub and stops with a clear message. The syscall table is also still x86-64-numbered
-(§3.2), so real glibc binaries need that regenerated first.
+stub and stops with a clear message. The syscall table is now aarch64-numbered (§3.2), so a guest issuing
+`write` as `x8=64` reaches the write handler.
 
 ---|---|
 | 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
@@ -181,13 +181,24 @@ The numbers are unrelated. Illustrative:
 | `futex` | 202 | 98 |
 | `wait4` | 61 | 260 |
 
-**Do not hand-transcribe this.** Generate `include/syscall.h` from the kernel's
-`asm-generic/unistd.h` with a script under [util/](util/), so it is reproducible
-and auditable. Hand-typed syscall tables are where this port will otherwise die.
+**Done, generated not hand-typed.** [include/syscall_arm64.h](include/syscall_arm64.h)
+is produced by [util/gen_syscall_table.py](util/gen_syscall_table.py) from Linux
+v6.6 `include/uapi/asm-generic/unistd.h` (`make syscalls UNISTD=<path>`, output
+byte-reproducible), and [include/syscall.h](include/syscall.h) selects it or the
+hand-kept [syscall_x86.h](include/syscall_x86.h) by architecture. The generator
+prints an audit report: **137 handlers wired** to their aarch64 numbers, the rest
+`unimplemented`.
 
-The ~30 legacy handlers with no aarch64 number (`open`, `stat`, `fork`, `dup2`,
-`arch_prctl`, …) can stay compiled in — glibc will never call them. Removing them
-is cleanup, not a blocker.
+The ~40 legacy handlers with no aarch64 number (`open`, `stat`, `fork`, `dup2`,
+`arch_prctl`, …) turned out **not** to be free to leave compiled in, contrary to
+the original assumption below: their `meta_strace` wrappers reference
+`LSYS_<name>`, which only exists for names in the table. So the generator appends
+them as a compat tail past the real range — an `LSYS_` id and a prototype without
+disturbing the real numbering. Real glibc never issues those numbers.
+
+Originally: *"the ~30 legacy handlers can stay compiled in — glibc will never call
+them. Removing them is cleanup, not a blocker."* Half right — they stay, but only
+because the generator wires them a compat id.
 
 Missing and needed: `ppoll`, `epoll_create1`, `epoll_pwait`, `statx`.
 `fstatat` is aarch64's `newfstatat` (nr 79) and already exists under that name.
