@@ -37,7 +37,14 @@ VERSION  := $(strip $(shell cat VERSION 2>/dev/null || echo 0.0.0))
 NATIVE_ARCH := $(shell uname -m)
 ARCH ?= $(NATIVE_ARCH)
 
-ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c
+# The per-architecture source set. Only the x86 list is built today; the arm64
+# list is what a whole nabi will link once mm/exec/signal/main are ported. Its
+# pieces are compiled and run in isolation now by `make check-arm64`.
+ifeq ($(ARCH),x86_64)
+    ARCH_SRCS := lib/vmm_x86.c lib/vmm_x86_exit.c src/mm/mm_x86.c
+else
+    ARCH_SRCS := lib/vmm_arm64.c lib/vmm_arm64_exit.c src/mm/mm_arm64.c src/mm/pt_arm64.c
+endif
 
 # The arch guard is a parse-time $(error), so it has to be skipped for goals
 # that do not build the guest backend - otherwise `make clean`, `sudo make
@@ -201,10 +208,10 @@ $(ARM64_TEST): test/arch/test_arm64_backend.c lib/vmm_arm64.c lib/vmm_arm64_exit
 
 MMU_TEST := $(OUT)/test_arm64_mmu
 
-$(MMU_TEST): test/arch/test_arm64_mmu.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c $(HEADERS) | $(OUT)
+$(MMU_TEST): test/arch/test_arm64_mmu.c src/mm/pt_arm64.c src/mm/mm_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c $(HEADERS) | $(OUT)
 	$(CC) -arch arm64 -std=gnu11 -O0 -g \
 	    -Wall -Wextra -Wno-unused-parameter -Iinclude \
-	    -o $@ test/arch/test_arm64_mmu.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c \
+	    -o $@ test/arch/test_arm64_mmu.c src/mm/pt_arm64.c src/mm/mm_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c \
 	    -framework Hypervisor
 	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
 

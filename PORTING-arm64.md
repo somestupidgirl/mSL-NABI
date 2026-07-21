@@ -8,7 +8,7 @@
 |---|---|
 | 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
-| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c/exec/signal integration outstanding |
+| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c arch-split; `vmm_mmap` guest-region model (§3.5.2) and exec/signal outstanding |
 | 3–6 | not started |
 
 `make check` runs everything that can run on this machine. A whole arm64 `nabi`
@@ -263,6 +263,61 @@ allocator, as predicted.
 Note also that `kmap` asserts `& 0xfff` and `__page_aligned` is
 `aligned(0x1000)`; both are 4KiB and both feed `vmm_mmap` directly, so both have
 to become 16KiB on the arm64 side regardless of what the guest sees.
+
+### 3.5.2 The `vmm_mmap` ownership problem — the next piece
+
+Stage-1 translation works ([src/mm/pt_arm64.c](src/mm/pt_arm64.c)) and
+[src/mm/mm.c](src/mm/mm.c) is arch-split, but one thing stands between here and a
+guest that can run its own `mmap`, `brk` and stack: **who owns the host memory
+that backs a guest region.**
+
+On x86 the model is flat. [src/mm/mmap.c](src/mm/mmap.c) does a Darwin `mmap` to
+get a host buffer `ptr`, records `(ptr, gaddr)` in an `mm_region`, and calls
+`vmm_mmap(gaddr, len, prot, ptr)`, which is one `hv_vm_map`: guest-physical
+equals guest-virtual (flat map), and any 4KiB-aligned `ptr` maps directly. The
+same `mm_region` then serves `guest_to_host` for the host's own reads.
+
+On arm64 that breaks at `hv_vm_map`, which is 16KiB-granular on all three
+arguments (§3.5). The relevant facts, measured:
+
+- The Darwin `mmap` `ptr` *is* 16KiB-aligned — that is the host page size — so
+  the host address is not the problem.
+- `len` is only rounded to 4KiB, and the guest `gaddr` need not be 16KiB-
+  aligned, so `hv_vm_map(ptr, gaddr, len, …)` still fails on size and IPA.
+
+So a guest 4KiB region cannot become one `hv_vm_map`, which is exactly what
+`pt_arm64` already solves for memory *it* allocates: 4KiB stage-1 pages inside
+16KiB stage-2 chunks. The unresolved question is the caller-provided buffer.
+
+**Recommended model — `pt_arm64` owns all guest backing.** A guest region's
+host memory comes from the chunk allocator, not from the caller's Darwin `mmap`.
+`vmm_mmap` on arm64 allocates chunk-backed pages, maps `VA → IPA → chunk`, and
+the `mm_region` records the *chunk* address as `haddr` so `guest_to_host` still
+agrees with what the guest sees. Initial contents (a file's bytes, an ELF
+segment) are copied into the chunk.
+
+The consequences, stated honestly:
+
+- It changes the `vmm_mmap` contract: the caller-supplied `ptr` becomes a
+  *source to copy from*, not the backing itself. `mmap.c`, `shm.c` and `kmap`
+  all pass through here and all need the new contract.
+- **`MAP_SHARED` file mappings regress** to private-like behaviour: writes land
+  in the chunk, not back to the file, because the chunk is not the file's page
+  cache. Anonymous and `MAP_PRIVATE` mappings — the overwhelming majority — are
+  unaffected. This is a real limitation and should be recorded where the code
+  makes the choice, not discovered later.
+- `pt_arm64` needs the operations it does not have yet: unmap, permission
+  change, and chunk teardown, for `munmap`, `mprotect` and process exit.
+
+The alternative — 16KiB-align guest allocations wherever NABI picks the address
+and chunk only for `MAP_FIXED` at a 4KiB boundary — avoids the copy but forks
+into two mapping paths and still cannot honour a guest that `mmap`s at a
+4KiB-but-not-16KiB fixed address. The single owning allocator is simpler and
+correct everywhere; take the copy.
+
+This is the immediate next step and deserves its own commit and hardware test:
+a guest that writes through a `vmm_mmap`'d VA, with the host confirming the write
+via `guest_to_host` — end-to-end aliasing in the two-stage model.
 
 ### 3.5.1 Cache coherency — net-new work with no x86 counterpart
 
