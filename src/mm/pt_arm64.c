@@ -121,7 +121,7 @@ alloc_guest_page(gaddr_t *ipa_out)
     cur_chunk.used = 0;
     ipa_brk += STAGE2_GRANULE;
 
-    vmm_mmap(cur_chunk.ipa, STAGE2_GRANULE,
+    vmm_arm64_map_stage2(cur_chunk.ipa, STAGE2_GRANULE,
              HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC, cur_chunk.hva);
 
     if (nr_chunks == MAX_CHUNKS)
@@ -321,4 +321,69 @@ gaddr_t
 pt_root_ipa(void)
 {
   return l1_table.ipa;
+}
+
+/* ------------------------------------------------------- vmm_mmap */
+
+/*
+ * The arch-neutral vmm_mmap, arm64 side. Its x86 counterpart in
+ * lib/vmm_x86.c is a single hv_vm_map because x86 has one translation stage;
+ * here it drives both.
+ *
+ * `gaddr` is a guest *virtual* address and `haddr` is host memory the caller
+ * already holds - on the mmap path, the Darwin mmap of an anonymous region or a
+ * file. That host pointer becomes the stage-2 backing directly, which is the
+ * good case worth calling out: for a MAP_SHARED file mapping `haddr` is the
+ * file's page cache, so writes reach the file, and the mapping is NOT the
+ * private-only fallback an earlier draft of the plan feared (§3.5.2). No copy.
+ *
+ * The two granules are bridged the way §3.5 lays out. hv_vm_map needs 16KiB on
+ * host address, IPA and size; a Darwin mmap pointer is 16KiB-aligned and its
+ * allocation is rounded up to a host page, so mapping roundup(size, 16KiB) of
+ * it is always in bounds. The guest VA need not be 16KiB-aligned, but the IPA
+ * is ours to pick, so a 16KiB-aligned IPA block is allocated for the region and
+ * stage 1 maps each 4KiB VA page onto its 4KiB offset within.
+ *
+ * The stage-2 block can be up to ~12KiB larger than the logical region (the
+ * rounding), but the guest cannot reach the tail: stage 1 only maps the VA
+ * range, so there is no VA that translates into the extra IPA. And that tail is
+ * the caller's own mmap reservation regardless, so there is nothing to leak.
+ */
+void
+vmm_mmap(gaddr_t gaddr, size_t size, int prot, void *haddr)
+{
+  assert((gaddr & (PAGE_SIZEOF(PAGE_4KB) - 1)) == 0);
+  assert(((uintptr_t) haddr & (STAGE2_GRANULE - 1)) == 0);
+
+  size_t s2_size = roundup(size, STAGE2_GRANULE);
+
+  /* One 16KiB-aligned IPA block for the whole region, reserved before any
+   * stage-1 page is mapped so table growth (which also draws from ipa_brk)
+   * cannot land inside it. */
+  gaddr_t ipa = ipa_brk;
+  ipa_brk += s2_size;
+
+  vmm_arm64_map_stage2(ipa, s2_size, prot, haddr);
+
+  for (size_t off = 0; off < size; off += PAGE_SIZEOF(PAGE_4KB))
+    pt_map_page(gaddr + off, ipa + off, prot);
+}
+
+/*
+ * Not implemented yet.
+ *
+ * do_munmap only reaches here for a region that already exists, and a fresh
+ * exec address space has none, so ELF loading never calls it - which is what
+ * this commit needs. A real munmap / mprotect / MAP_FIXED remap does, and doing
+ * it right means clearing the stage-1 PTEs (with a TLB invalidate the framework
+ * does not expose directly), unmapping the stage-2 block and reclaiming the
+ * IPA. Panic rather than silently leave the guest able to reach freed memory.
+ */
+void
+vmm_munmap(gaddr_t gaddr, size_t size)
+{
+  (void) gaddr;
+  (void) size;
+  panic("vmm_munmap: VA-region unmap not implemented for arm64 yet "
+        "(munmap/mprotect/MAP_FIXED-remap). See PORTING-arm64.md 3.5.2.");
 }

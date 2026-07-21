@@ -49,30 +49,33 @@ vmm_arm64_exit_record(void)
 /* ------------------------------------------------------------ stage 2 */
 
 /*
+ * The stage-2 primitive: map/unmap an IPA range onto host memory. NOT the
+ * arch-neutral vmm_mmap - that is the VA-region mapper in src/mm/pt_arm64.c,
+ * which drives stage 1 and calls this for stage 2.
+ *
  * hv_vm_map rejects anything not 16KiB-granular on host address, IPA and size
- * alike - measured, see PORTING-arm64.md section 3.5. These asserts are the
- * x86 backend's PAGE_4KB checks retuned; violating them yields HV_BAD_ARGUMENT
- * from deep inside the framework, which says nothing about which of the three
- * arguments was wrong.
+ * alike - measured, see PORTING-arm64.md section 3.5. These asserts catch that
+ * up front; violating it otherwise yields HV_BAD_ARGUMENT from deep in the
+ * framework, which says nothing about which of the three arguments was wrong.
  */
 void
-vmm_mmap(gaddr_t gaddr, size_t size, int prot, void *haddr)
+vmm_arm64_map_stage2(gaddr_t ipa, size_t size, int prot, void *haddr)
 {
   assert(((uintptr_t) haddr & (STAGE2_GRANULE - 1)) == 0);
-  assert((gaddr & (STAGE2_GRANULE - 1)) == 0);
-  assert((size  & (STAGE2_GRANULE - 1)) == 0);
+  assert((ipa & (STAGE2_GRANULE - 1)) == 0);
+  assert((size & (STAGE2_GRANULE - 1)) == 0);
 
-  hv_vm_unmap(gaddr, size);
-  if (hv_vm_map(haddr, gaddr, size, prot) != HV_SUCCESS) {
+  hv_vm_unmap(ipa, size);
+  if (hv_vm_map(haddr, ipa, size, prot) != HV_SUCCESS) {
     panic("hv_vm_map failed\n");
   }
 }
 
 void
-vmm_munmap(gaddr_t gaddr, size_t size)
+vmm_arm64_unmap_stage2(gaddr_t ipa, size_t size)
 {
   assert((size & (STAGE2_GRANULE - 1)) == 0);
-  hv_vm_unmap(gaddr, size);
+  hv_vm_unmap(ipa, size);
 }
 
 /* ------------------------------------------------------- VM lifecycle */

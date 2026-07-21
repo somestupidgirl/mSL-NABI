@@ -110,7 +110,7 @@ setup_vm(void)
   memset(guest, 0, GUEST_SIZE);
 
   vmm_create();
-  vmm_mmap(GUEST_BASE, GUEST_SIZE,
+  vmm_arm64_map_stage2(GUEST_BASE, GUEST_SIZE,
            HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC, guest);
 
   vmm_arm64_init_vcpu();
