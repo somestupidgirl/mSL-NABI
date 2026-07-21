@@ -178,7 +178,7 @@ $(OUT):
 # Linux box at idylls.jp that has not existed for years. Running the tests does
 # not need it; regenerating them does.
 # ---------------------------------------------------------------------------
-check: check-decode check-arm64 check-guest
+check: check-decode check-arm64 check-smoke check-guest
 
 # Unit tests for the exit decoder. These need no VT-x - they substitute the
 # accessors in vmm.h with a fake machine - so they run anywhere, including on
@@ -241,6 +241,19 @@ check-arm64: $(ARM64_TEST) $(MMU_TEST) $(VMMAP_TEST) $(BOOT_TEST)
 		echo "SKIP: the aarch64 backend tests need Apple Silicon to run."; \
 	else \
 		$(ARM64_TEST) && $(MMU_TEST) && $(VMMAP_TEST) && $(BOOT_TEST); \
+	fi
+
+# End-to-end: run committed aarch64 binaries under a natively-built nabi. Needs
+# Apple Silicon and a full arm64 build; skips otherwise. This is the first test
+# that exercises the whole pipeline on a real ELF (load, translation, syscall
+# dispatch, cache sync), rather than a component in isolation.
+check-smoke:
+	@if [ "$(NATIVE_ARCH)" != "arm64" ]; then \
+		echo "SKIP: the smoke test needs Apple Silicon to run a nabi."; \
+	else \
+		$(MAKE) --no-print-directory ARCH=arm64 build >/dev/null && \
+		echo "==> arm64 end-to-end smoke test" && \
+		test/arch/smoke/run.sh $(NABI); \
 	fi
 
 # The full guest suite. Runs prebuilt Linux binaries, so it needs a host that
@@ -318,4 +331,4 @@ syscalls:
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all build debug check check-decode check-arm64 check-guest syscalls install migrate uninstall require-root require-built clean
+.PHONY: all build debug check check-decode check-arm64 check-smoke check-guest syscalls install migrate uninstall require-root require-built clean

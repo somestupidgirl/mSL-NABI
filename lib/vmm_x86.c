@@ -426,3 +426,14 @@ vmm_reset_regs(void)
 
   init_fpu();
 }
+
+/*
+ * vmm_sync_guest_code (include/arch.h): a no-op on x86, whose caches are
+ * coherent with instruction fetch. The arm64 backend does real work here.
+ */
+void
+vmm_sync_guest_code(gaddr_t gaddr, size_t len)
+{
+  (void) gaddr;
+  (void) len;
+}

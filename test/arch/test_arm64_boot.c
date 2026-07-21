@@ -65,6 +65,22 @@ panic(const char *fmt, ...)
 /* pt_arm64 helpers the test uses to place code/stack, as exec.c's do_mmap will. */
 void *pt_alloc_and_map(gaddr_t va, int prot);
 
+/*
+ * The loader syncs freshly written guest code through vmm_sync_guest_code(gva),
+ * which resolves the address with guest_to_host - normally the mm_region walk in
+ * mm.c. This test does not link mm.c, so it provides the one mapping it needs:
+ * VA_CODE -> the host buffer pt_alloc_and_map handed back. This exercises the
+ * exact call exec.c makes rather than the lower-level host-pointer variant.
+ */
+static void *code_host;
+void *
+guest_to_host(gaddr_t gaddr)
+{
+  if (gaddr >= VA_CODE && gaddr < VA_CODE + PAGE_SIZEOF(PAGE_4KB))
+    return (char *) code_host + (gaddr - VA_CODE);
+  return NULL;
+}
+
 int
 main(void)
 {
@@ -84,11 +100,14 @@ main(void)
    */
   uint32_t *code = pt_alloc_and_map(VA_CODE, LINUX_PROT_READ | LINUX_PROT_EXEC);
   pt_alloc_and_map(VA_STACK, LINUX_PROT_READ | LINUX_PROT_WRITE);
+  code_host = code;
 
   code[0] = MOVZ(8, SYS_EXIT);   /* mov x8, #93 */
   code[1] = INSN_SVC0;           /* svc #0      */
   code[2] = INSN_SVC0;           /* stop        */
-  vmm_arm64_sync_guest_code(code, PAGE_SIZEOF(PAGE_4KB));
+  /* The exact call exec.c makes after loading an executable segment: a guest
+   * virtual address, resolved through guest_to_host inside the backend. */
+  vmm_sync_guest_code(VA_CODE, PAGE_SIZEOF(PAGE_4KB));
 
   vmm_set_reg(VREG_PC, VA_CODE);
   vmm_set_reg(VREG_SP, VA_STACK + PAGE_SIZEOF(PAGE_4KB) - 16);

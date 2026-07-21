@@ -243,6 +243,20 @@ vmm_arm64_sync_guest_code(void *hva, size_t len)
   sys_icache_invalidate(hva, len);
 }
 
+/*
+ * vmm_sync_guest_code (include/arch.h): the neutral entry the loader calls.
+ * Resolves the guest virtual address to its host backing and invalidates the
+ * instruction cache over it. The region must already be mapped - the loader
+ * maps a segment before writing it - so guest_to_host resolves.
+ */
+void
+vmm_sync_guest_code(gaddr_t gaddr, size_t len)
+{
+  void *hva = guest_to_host(gaddr);
+  if (hva)
+    vmm_arm64_sync_guest_code(hva, len);
+}
+
 /* -------------------------------------------------------- trampoline */
 
 /*

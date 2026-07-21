@@ -76,6 +76,9 @@ kind_name(enum vm_exit_kind k)
  * pull in most of the process model, so stub them. */
 void printk(const char *fmt, ...) { (void) fmt; }
 void warnk(const char *fmt, ...) { (void) fmt; }
+/* Not exercised here: these tests do not call vmm_sync_guest_code, but
+ * vmm_arm64.c references guest_to_host. Return NULL - never reached. */
+void *guest_to_host(gaddr_t g) { (void) g; return NULL; }
 
 void
 panic(const char *fmt, ...)

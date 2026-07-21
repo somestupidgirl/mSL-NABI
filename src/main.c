@@ -16,6 +16,7 @@
 #include "syscall.h"
 #include "linux/errno.h"
 #include <sys/sysctl.h>
+#include <sys/resource.h>
 
 #include <mach-o/dyld.h>
 
@@ -132,6 +133,32 @@ init_first_proc(const char *root)
   list_add(&task.head, &proc.tasks);
   init_mm(proc.mm);
   init_signal();
+
+  /*
+   * Clamp RLIMIT_NOFILE to what the OS can actually give a process.
+   *
+   * init_fileinfo reserves the top 64 file descriptors - [rlim_cur-64,
+   * rlim_cur) - for kernel objects, dup'ing the root directory to the first of
+   * them. That assumes rlim_cur is a number the process can hold a descriptor
+   * near. On modern macOS the soft limit is reported as 1048576, far above the
+   * real per-process cap (kern.maxfilesperproc, 61440 here), so the reserved
+   * descriptors land at ~1M and dup2 to them fails - the root fd comes back
+   * invalid and every path lookup returns EBADF before the guest even loads.
+   * (Older macOS, where this last ran on Intel, defaulted the soft limit to
+   * ~256, so the reservation happened to fit.)
+   */
+  {
+    struct rlimit rl;
+    int maxfiles = 0;
+    size_t sz = sizeof maxfiles;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 &&
+        sysctlbyname("kern.maxfilesperproc", &maxfiles, &sz, NULL, 0) == 0 &&
+        maxfiles > 0 && rl.rlim_cur > (rlim_t) maxfiles) {
+      rl.rlim_cur = maxfiles;
+      setrlimit(RLIMIT_NOFILE, &rl);
+    }
+  }
+
   int rootfd = open(root, O_RDONLY | O_DIRECTORY);
   if (rootfd < 0) {
     perror("could not open initial root directory");

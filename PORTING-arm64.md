@@ -2,36 +2,27 @@
 
 **Target:** run **aarch64** Linux binaries on arm64 macOS via Hypervisor.framework's ARM API.
 
-**Status** (M5, macOS 26): **a native arm64 `nabi` links and runs.**
+**Status** (M5, macOS 26): **a native arm64 `nabi` runs real aarch64 Linux
+binaries end to end** - `make check-smoke` loads and runs static ELFs that
+`write` and `exit`, output and exit codes propagating.
 
 | Phase | State |
 |---|---|
 | 0 — trap mechanism | **done**, hardware-validated, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h) |
 | 2 — arm64 VMM backend | **done** — backend, stage-1 translation, two-stage `vmm_mmap`, guest boot to EL0, all hardware-verified (`make check-arm64`) |
-| 3 — syscall table + ABI | **mostly done** — syscall table generated for aarch64 numbering (§3.2), exec.c ported, TLS via `TPIDR_EL0`, `EM_AARCH64` gate. `ppoll`/`epoll_*`/`statx` still unimplemented (handlers, not numbering) |
+| 3 — syscall table + ABI | **done for the static case** — generated aarch64 table (§3.2), exec.c ported, code-cache sync wired in, TLS via `TPIDR_EL0`. A static ELF loads, runs, syscalls and exits (`make check-smoke`). `ppoll`/`epoll_*`/`statx` and the dynamic linker still to come |
 | 4 — signals, fork, threads | **stubbed** — signal delivery (signal_arm64.c) and fork/clone snapshot (vmm_arm64.c) panic loudly; the real implementations are net-new |
 | 5–6 | rootfs, dynamic linking, test port — not started |
 
-`make ARCH=arm64` now produces a signed arm64 binary. What it can do today is bounded
-by the Phase 4 stubs: a **single-threaded, signal-free** aarch64 guest can be loaded and
-run to exit. Anything that forks, spawns a thread, or takes a delivered signal hits a
-stub and stops with a clear message. The syscall table is now aarch64-numbered (§3.2), so a guest issuing
-`write` as `x8=64` reaches the write handler.
-
----|---|
-| 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
-| 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
-| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c/main.c arch-split, exec.c ported, two-stage `vmm_mmap` done. **signal.c is the sole remaining blocker.** `vmm_munmap` stubbed |
-| 3–6 | not started |
-
-`make check` runs everything that can run on this machine. A whole arm64 `nabi`
-does not link yet, but **[src/ipc/signal.c](src/ipc/signal.c) is the only
-remaining blocker** (signal frames, Phase 4). Everything else compiles for arm64.
-The production startup path - init_vkernel_machine() then vmm_start_guest() in
-[src/main_arm64.c](src/main_arm64.c) - is verified on hardware (`make
-check-arm64`): it boots a guest to EL0 through page tables, the trampoline and an
-MMU-enable, the way main.c will.
+`make ARCH=arm64` produces a signed arm64 binary that **runs real static aarch64
+Linux ELFs** - proven by `make check-smoke`. Bounds today: a **single-threaded,
+signal-free, statically-linked** guest works. Anything that forks, spawns a
+thread, takes a delivered signal, or needs the dynamic linker (which `mmap`s and
+`munmap`s) hits a Phase 4 stub. Three real host-side bugs stood between "links"
+and "runs", all found by the first smoke test and fixed: a W^X-incompatible RWX
+mmap of the malloc arena, an unreachable `RLIMIT_NOFILE`-derived kernel fd range
+on modern macOS, and an unchecked `PROT_EXEC` file mmap of the ELF.
 
 ---
 

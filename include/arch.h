@@ -140,6 +140,18 @@ void vmm_set_tls(uint64_t);
 void vmm_get_tls(uint64_t *);
 
 /*
+ * Make host-written guest code executable by the guest.
+ *
+ * After the host writes instructions into guest memory - an ELF segment, a
+ * signal trampoline - the guest's instruction fetch may not see them until the
+ * caches are reconciled. x86 is coherent with instruction fetch and this is a
+ * no-op; aarch64 is not, and without it the guest runs whatever was previously
+ * at those addresses (measured; see PORTING-arm64.md section 3.5.1). Takes a
+ * guest virtual address, since that is what the loader works in.
+ */
+void vmm_sync_guest_code(gaddr_t gaddr, size_t len);
+
+/*
  * Undo one vmm_syscall_return worth of PC advance.
  *
  * execve sets the new program's entry point as the PC and then returns through

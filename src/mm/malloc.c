@@ -39,7 +39,21 @@ init_shm_malloc(void)
 {
   /* this function is part of the "boot" sequence */
 
-  arena_start = mmap(NULL, MEMORY_ARENA_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANON | MAP_HASSEMAPHORE | MAP_SHARED, -1, 0);
+  /*
+   * The host never executes this arena - it is vkern malloc/shm bookkeeping -
+   * so PROT_EXEC is vestigial. On Apple Silicon it is worse than vestigial:
+   * macOS refuses a writable+executable MAP_SHARED anonymous mapping without a
+   * JIT entitlement (W^X), so the mmap fails with EPERM before the guest even
+   * loads. Drop PROT_EXEC on arm64; guest execution permission comes from the
+   * stage-1/stage-2 tables when the guest maps memory, never from this host
+   * mapping's bits.
+   */
+#ifdef __x86_64__
+  int arena_prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+#else
+  int arena_prot = PROT_READ | PROT_WRITE;
+#endif
+  arena_start = mmap(NULL, MEMORY_ARENA_SIZE, arena_prot, MAP_ANON | MAP_HASSEMAPHORE | MAP_SHARED, -1, 0);
   if (arena_start == MAP_FAILED) {
     perror("init_malloc");
     exit(1);

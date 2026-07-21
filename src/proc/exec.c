@@ -50,7 +50,15 @@ load_elf_interp(const char *path, ulong load_addr)
 
   fstat(fd, &st);
 
-  data = mmap(0, st.st_size, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0);
+  /* The host only reads this mapping - to check the magic and copy segments
+   * into guest memory - so PROT_READ is enough. PROT_EXEC additionally fails on
+   * Apple Silicon, which refuses to map an arbitrary (unsigned) file
+   * executable, and the result was used unchecked. */
+  data = mmap(0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (data == MAP_FAILED) {
+    vkern_close(fd);
+    return -LINUX_ENOEXEC;
+  }
 
   vkern_close(fd);
 
@@ -88,6 +96,11 @@ load_elf_interp(const char *path, ulong load_addr)
     do_mmap(vaddr, size, PROT_READ | PROT_WRITE, prot, LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANONYMOUS, -1, 0);
 
     copy_to_user(vaddr + offset, data + p[i].p_offset, p[i].p_filesz);
+
+    /* An executable segment the host just wrote is not visible to the guest's
+     * instruction fetch on arm64 until the caches are reconciled; no-op on x86. */
+    if (prot & LINUX_PROT_EXEC)
+      vmm_sync_guest_code(vaddr + offset, p[i].p_filesz);
 
     map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZEOF(PAGE_4KB)));
   }
@@ -150,6 +163,10 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
     do_mmap(vaddr, size, PROT_READ | PROT_WRITE, prot, LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANONYMOUS, -1, 0);
 
     copy_to_user(vaddr + offset, (char *)ehdr + p[i].p_offset, p[i].p_filesz);
+
+    /* See load_elf_interp: reconcile caches for host-written guest code. */
+    if (prot & LINUX_PROT_EXEC)
+      vmm_sync_guest_code(vaddr + offset, p[i].p_filesz);
 
     if (! load_base_set) {
       load_base = p[i].p_vaddr - p[i].p_offset + global_offset;
@@ -399,7 +416,15 @@ do_exec(const char *elf_path, int argc, char *argv[], char **envp)
 
   prepare_newproc();
 
-  data = mmap(0, st.st_size, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0);
+  /* The host only reads this mapping - to check the magic and copy segments
+   * into guest memory - so PROT_READ is enough. PROT_EXEC additionally fails on
+   * Apple Silicon, which refuses to map an arbitrary (unsigned) file
+   * executable, and the result was used unchecked. */
+  data = mmap(0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (data == MAP_FAILED) {
+    vkern_close(fd);
+    return -LINUX_ENOEXEC;
+  }
 
   vkern_close(fd);
 

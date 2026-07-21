@@ -5,3 +5,4 @@ GRTAGS
 GTAGS
 tags
 out/
+.DS_Store
