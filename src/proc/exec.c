@@ -18,6 +18,14 @@
 #include "x86/vm.h"
 #include "elf.h"
 
+/* The ELF e_machine the guest must be. The whole point of the port: flip this
+ * from EM_X86_64 to EM_AARCH64 and the loader accepts aarch64 binaries. */
+#ifdef __x86_64__
+#define GUEST_EM_MACHINE EM_X86_64
+#else
+#define GUEST_EM_MACHINE EM_AARCH64
+#endif
+
 #include "linux/common.h"
 #include "linux/mman.h"
 #include "linux/misc.h"
@@ -53,7 +61,7 @@ load_elf_interp(const char *path, ulong load_addr)
   if (! (h->e_type == ET_EXEC || h->e_type == ET_DYN)) {
     return -LINUX_ENOEXEC;
   }
-  if (h->e_machine != EM_X86_64) {
+  if (h->e_machine != GUEST_EM_MACHINE) {
     return -LINUX_ENOEXEC;
   }
 
@@ -84,7 +92,7 @@ load_elf_interp(const char *path, ulong load_addr)
     map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZEOF(PAGE_4KB)));
   }
 
-  vmm_write_vmcs(VMCS_GUEST_RIP, load_addr + h->e_entry);
+  vmm_set_reg(VREG_PC, load_addr + h->e_entry);
   proc.mm->start_brk = map_top;
 
   munmap(data, st.st_size);
@@ -104,7 +112,7 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
     fflush(stderr);
     return -LINUX_ENOEXEC;
   }
-  if (ehdr->e_machine != EM_X86_64) {
+  if (ehdr->e_machine != GUEST_EM_MACHINE) {
     fprintf(stderr, "not an x64 executable");
     fflush(stderr);
     return -LINUX_ENOEXEC;
@@ -170,7 +178,7 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
     }
   }
   else {
-    vmm_write_vmcs(VMCS_GUEST_RIP, ehdr->e_entry + global_offset);
+    vmm_set_reg(VREG_PC, ehdr->e_entry + global_offset);
     proc.mm->start_brk = map_top;
   }
 
@@ -243,9 +251,9 @@ push(const void *data, size_t n)
 
   assert(data != 0);
 
-  vmm_read_register(HV_X86_RSP, &rsp);
+  vmm_get_reg(VREG_SP, &rsp);
   rsp -= size;
-  vmm_write_register(HV_X86_RSP, rsp);
+  vmm_set_reg(VREG_SP, rsp);
 
   copy_to_user(rsp, data, n);
 
@@ -259,8 +267,12 @@ init_userstack(int argc, char *argv[], char **envp, uint64_t exe_base, const Elf
 
   do_mmap(STACK_TOP - STACK_SIZE, STACK_SIZE, PROT_READ | PROT_WRITE, LINUX_PROT_READ | LINUX_PROT_WRITE, LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANONYMOUS, -1, 0);
 
-  vmm_write_register(HV_X86_RSP, STACK_TOP);
+  vmm_set_reg(VREG_SP, STACK_TOP);
+#ifdef __x86_64__
+  /* RBP=STACK_TOP is an x86 nicety; the aarch64 process-start ABI puts no
+   * requirement on x29, and crt0 establishes its own frame either way. */
   vmm_write_register(HV_X86_RBP, STACK_TOP);
+#endif
 
   char random[16];
 
@@ -336,34 +348,9 @@ init_userstack(int argc, char *argv[], char **envp, uint64_t exe_base, const Elf
 static void
 init_reg_state(void)
 {
-  vmm_write_register(HV_X86_RAX, 0);
-  vmm_write_register(HV_X86_RBX, 0);
-  vmm_write_register(HV_X86_RCX, 0);
-  vmm_write_register(HV_X86_RDX, 0);
-  vmm_write_register(HV_X86_RSI, 0);
-  vmm_write_register(HV_X86_RDI, 0);
-  vmm_write_register(HV_X86_R8, 0);
-  vmm_write_register(HV_X86_R9, 0);
-  vmm_write_register(HV_X86_R10, 0);
-  vmm_write_register(HV_X86_R11, 0);
-  vmm_write_register(HV_X86_R12, 0);
-  vmm_write_register(HV_X86_R13, 0);
-  vmm_write_register(HV_X86_R14, 0);
-  vmm_write_register(HV_X86_R15, 0);
-
-  vmm_write_vmcs(VMCS_GUEST_FS, 0);
-  vmm_write_vmcs(VMCS_GUEST_ES, 0);
-  vmm_write_vmcs(VMCS_GUEST_GS, 0);
-  vmm_write_vmcs(VMCS_GUEST_DS, 0);
-  vmm_write_vmcs(VMCS_GUEST_CS, GSEL(SEG_CODE, 0));
-  vmm_write_vmcs(VMCS_GUEST_DS, GSEL(SEG_DATA, 0));
-
-  vmm_write_vmcs(VMCS_GUEST_FS_BASE, 0);
-  vmm_write_vmcs(VMCS_GUEST_GS_BASE, 0);
-
-  vmm_write_vmcs(VMCS_GUEST_LDTR, 0);
-
-  init_fpu();
+  /* The post-exec register state is arch-specific - which registers exist,
+   * segments-or-not, the FPU layout - so it lives in the backend. */
+  vmm_reset_regs();
 }
 
 static void
@@ -524,9 +511,10 @@ DEFINE_SYSCALL(execve, gstr_t, gelf_path, gaddr_t, gargv, gaddr_t, genvp)
     goto fail_copy_envp;
   }
 
-  uint64_t entry;
-  vmm_read_register(HV_X86_RIP, &entry);
-  vmm_write_register(HV_X86_RIP, entry - 2); // because syscall handler adds 2 to current rip when returning to vmm_run
+  /* do_exec set VREG_PC to the new entry point. main_loop will apply
+   * vmm_syscall_return after this handler, so undo that advance now to land on
+   * the entry exactly. Arch-neutral: a no-op on aarch64. */
+  vmm_syscall_unadvance();
 
  fail_copy_envp:
   free(envp);

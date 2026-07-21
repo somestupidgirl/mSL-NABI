@@ -204,6 +204,18 @@ vmm_enter(void)
   return hv_vcpu_run(vcpu->vcpuid) == HV_SUCCESS ? 0 : -1;
 }
 
+/* Zero the FP/SIMD register file. Kept here rather than in the exit file
+ * because it needs the vcpu handle, which stays private to this file. */
+void
+vmm_arm64_reset_fpsimd(void)
+{
+  const hv_simd_fp_uchar16_t zero = {0};
+  for (hv_simd_fp_reg_t q = HV_SIMD_FP_REG_Q0; q <= HV_SIMD_FP_REG_Q31; q++) {
+    if (hv_vcpu_set_simd_fp_reg(vcpu->vcpuid, q, zero) != HV_SUCCESS)
+      panic("hv_vcpu_set_simd_fp_reg(%u) failed", q);
+  }
+}
+
 /* --------------------------------------------------- code coherency */
 
 /*

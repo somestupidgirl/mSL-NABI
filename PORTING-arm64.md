@@ -8,16 +8,15 @@
 |---|---|
 | 0 — trap mechanism | **done**, validated on hardware, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h); x86 suite unrunnable here, see §7 |
-| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c arch-split; two-stage `vmm_mmap` done (§3.5.2). exec/signal/main outstanding; `vmm_munmap` stubbed |
+| 2 — arm64 VMM backend | **partial** — backend + stage-1 translation done and passing on hardware (`make check-arm64`); mm.c arch-split; two-stage `vmm_mmap` done (§3.5.2); exec.c ported. main.c/signal.c outstanding; `vmm_munmap` stubbed |
 | 3–6 | not started |
 
 `make check` runs everything that can run on this machine. A whole arm64 `nabi`
-does not link yet, but the set of blocking files is down to three:
-[src/main.c](src/main.c) (guest machine setup), [src/proc/exec.c](src/proc/exec.c)
-(the ELF ABI, §3.5.2 and Phase 3) and [src/ipc/signal.c](src/ipc/signal.c)
-(signal frames, Phase 4). Everything else compiles for arm64 - including
-mm.c/mmap.c/shm.c/fork.c/process.c/base.c - through the neutral interface in
-[include/arch.h](include/arch.h).
+does not link yet, but the set of blocking files is down to two:
+[src/main.c](src/main.c) (guest machine setup - init_vmcs/init_regs/init_fpu and
+the VMCS control fields) and [src/ipc/signal.c](src/ipc/signal.c) (signal frames,
+Phase 4). Everything else compiles for arm64 - including exec.c's ELF loader -
+through the neutral interface in [include/arch.h](include/arch.h).
 
 ---
 

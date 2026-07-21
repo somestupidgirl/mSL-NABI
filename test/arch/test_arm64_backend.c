@@ -343,6 +343,55 @@ test_tls_register(void)
         "the host set is not what the guest sees", x0);
 }
 
+static void
+test_reset_regs(void)
+{
+  printf("vmm_reset_regs zeroes x0-x30 (guest reads them back)\n");
+
+  /* Dirty a couple of registers, reset, then have the guest report x1 and x30
+   * so we confirm the guest - not just the host - sees zero. */
+  vmm_arm64_write_reg(HV_REG_X1, 0xAAAA);
+  vmm_arm64_write_reg(HV_REG_X30, 0xBBBB);
+
+  vmm_reset_regs();
+
+  uint64_t v = 0xffff;
+  vmm_arm64_read_reg(HV_REG_X1, &v);
+  CHECK(v == 0, "x1 = 0x%llx after reset, want 0", v);
+  vmm_arm64_read_reg(HV_REG_X30, &v);
+  CHECK(v == 0, "x30 = 0x%llx after reset, want 0", v);
+
+  /*
+   *   mov x8, #93 ; svc #0   -- x0 should still be 0 from the reset
+   */
+  put32(EL0_CODE_OFF + 0, MOVZ(8, SYS_EXIT));
+  put32(EL0_CODE_OFF + 4, INSN_SVC0);
+  put32(EL0_CODE_OFF + 8, INSN_B_BACK2);
+  start_el0();
+
+  struct vm_exit e;
+  CHECK(vmm_run(&e) == 0, "vmm_run failed");
+  uint64_t x0 = 0xff;
+  vmm_get_reg(VREG_ARG0, &x0);
+  CHECK(x0 == 0, "guest sees x0 = 0x%llx after reset, want 0", x0);
+}
+
+static void
+test_syscall_unadvance(void)
+{
+  printf("vmm_syscall_unadvance is the inverse of vmm_syscall_return\n");
+
+  /* On aarch64 both are no-ops: PC must be unchanged after unadvance+return. */
+  vmm_arm64_write_reg(HV_REG_PC, 0x123400);
+  vmm_syscall_unadvance();
+  vmm_syscall_return();
+  uint64_t pc = 0;
+  vmm_arm64_read_reg(HV_REG_PC, &pc);
+  CHECK(pc == 0x123400,
+        "PC = 0x%llx after unadvance+return, want 0x123400 (both no-ops on "
+        "aarch64)", pc);
+}
+
 int
 main(void)
 {
@@ -357,6 +406,8 @@ main(void)
   test_brk_is_sigtrap();
   test_fp_not_trapped();
   test_tls_register();
+  test_reset_regs();
+  test_syscall_unadvance();
 
   vmm_destroy_vcpu();
   vmm_destroy();

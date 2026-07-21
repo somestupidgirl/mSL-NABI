@@ -383,3 +383,46 @@ vmm_enter()
   }
   return -1;
 }
+
+/* Defined in src/main.c (x86 machine setup); resets the guest FPU to the
+ * post-fninit state. Migrates when main.c is arch-split. */
+extern void init_fpu(void);
+
+/*
+ * vmm_reset_regs (include/arch.h): the post-exec register state on x86-64.
+ * Moved verbatim from exec.c's init_reg_state. Lives here in the plumbing file
+ * rather than the exit decoder because it calls init_fpu - the decoder is
+ * isolated and tested without machine setup, and must not pull it in.
+ */
+void
+vmm_reset_regs(void)
+{
+  vmm_write_register(HV_X86_RAX, 0);
+  vmm_write_register(HV_X86_RBX, 0);
+  vmm_write_register(HV_X86_RCX, 0);
+  vmm_write_register(HV_X86_RDX, 0);
+  vmm_write_register(HV_X86_RSI, 0);
+  vmm_write_register(HV_X86_RDI, 0);
+  vmm_write_register(HV_X86_R8, 0);
+  vmm_write_register(HV_X86_R9, 0);
+  vmm_write_register(HV_X86_R10, 0);
+  vmm_write_register(HV_X86_R11, 0);
+  vmm_write_register(HV_X86_R12, 0);
+  vmm_write_register(HV_X86_R13, 0);
+  vmm_write_register(HV_X86_R14, 0);
+  vmm_write_register(HV_X86_R15, 0);
+
+  vmm_write_vmcs(VMCS_GUEST_FS, 0);
+  vmm_write_vmcs(VMCS_GUEST_ES, 0);
+  vmm_write_vmcs(VMCS_GUEST_GS, 0);
+  vmm_write_vmcs(VMCS_GUEST_DS, 0);
+  vmm_write_vmcs(VMCS_GUEST_CS, GSEL(SEG_CODE, 0));
+  vmm_write_vmcs(VMCS_GUEST_DS, GSEL(SEG_DATA, 0));
+
+  vmm_write_vmcs(VMCS_GUEST_FS_BASE, 0);
+  vmm_write_vmcs(VMCS_GUEST_GS_BASE, 0);
+
+  vmm_write_vmcs(VMCS_GUEST_LDTR, 0);
+
+  init_fpu();
+}

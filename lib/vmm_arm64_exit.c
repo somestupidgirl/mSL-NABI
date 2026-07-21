@@ -38,6 +38,7 @@ void vmm_arm64_write_reg(hv_reg_t, uint64_t);
 void vmm_arm64_read_sysreg(hv_sys_reg_t, uint64_t *);
 void vmm_arm64_write_sysreg(hv_sys_reg_t, uint64_t);
 int  vmm_enter(void);
+void vmm_arm64_reset_fpsimd(void);
 
 /* ==================================================== register mapping */
 
@@ -106,6 +107,29 @@ void
 vmm_get_tls(uint64_t *tls)
 {
   vmm_arm64_read_sysreg(HV_SYS_REG_TPIDR_EL0, tls);
+}
+
+void
+vmm_syscall_unadvance(void)
+{
+  /* No-op, the mirror of vmm_syscall_return: the CPU already advanced ELR_EL1
+   * past the svc, and nothing here re-advances the PC, so there is nothing to
+   * undo. */
+}
+
+void
+vmm_reset_regs(void)
+{
+  /*
+   * Post-exec register state on aarch64: x0-x30 and the FP/SIMD file cleared.
+   * No segments, no FS/GS bases - those are the x86 half of this operation and
+   * have no counterpart here. SP, PC and TPIDR_EL0 are set by the caller (SP
+   * and PC from the loaded image; TLS only via clone).
+   */
+  for (hv_reg_t r = HV_REG_X0; r <= HV_REG_X30; r++)
+    vmm_arm64_write_reg(r, 0);
+
+  vmm_arm64_reset_fpsimd();
 }
 
 void

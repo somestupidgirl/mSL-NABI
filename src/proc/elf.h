@@ -184,6 +184,7 @@ typedef struct {
 #define	EM_ST100	60	/* STMicroelectronics ST100 processor. */
 #define	EM_TINYJ	61	/* Advanced Logic Corp. TinyJ processor. */
 #define	EM_X86_64	62	/* Advanced Micro Devices x86-64 */
+#define	EM_AARCH64	183	/* ARM 64-bit (added for the arm64 port) */
 #define	EM_AMD64	EM_X86_64	/* Advanced Micro Devices x86-64 (compat) */
 #define	EM_PDSP		63	/* Sony DSP Processor. */
 #define	EM_FX66		66	/* Siemens FX66 microcontroller. */

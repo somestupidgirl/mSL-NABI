@@ -194,6 +194,16 @@ vmm_get_tls(uint64_t *tls)
 }
 
 void
+vmm_syscall_unadvance(void)
+{
+  /* The inverse of vmm_syscall_return: step RIP back over the two-byte
+   * `syscall`, so a following vmm_syscall_return lands where it started. */
+  uint64_t rip;
+  vmm_read_register(HV_X86_RIP, &rip);
+  vmm_write_register(HV_X86_RIP, rip - 2);
+}
+
+void
 vmm_syscall_return(void)
 {
   /* Step over the two-byte `syscall`. The #UD leaves RIP pointing at it, so

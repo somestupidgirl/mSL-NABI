@@ -139,4 +139,24 @@ void vmm_syscall_return(void);
 void vmm_set_tls(uint64_t);
 void vmm_get_tls(uint64_t *);
 
+/*
+ * Undo one vmm_syscall_return worth of PC advance.
+ *
+ * execve sets the new program's entry point as the PC and then returns through
+ * the normal syscall path, where main_loop unconditionally calls
+ * vmm_syscall_return - which would step the PC one instruction past the entry.
+ * This backs that off first. x86 subtracts the two bytes of `syscall`; aarch64
+ * is a no-op, the mirror of vmm_syscall_return itself.
+ */
+void vmm_syscall_unadvance(void);
+
+/*
+ * Put the vCPU register file into the ABI-defined state for a freshly exec'd
+ * process: general registers cleared, FP/SIMD reset, and on x86 the segment
+ * registers and bases set. Which registers exist and what "reset" means are
+ * exactly what differs between the architectures, so this lives in the backend.
+ * The caller sets PC and SP separately, from the loaded entry point and stack.
+ */
+void vmm_reset_regs(void);
+
 #endif
