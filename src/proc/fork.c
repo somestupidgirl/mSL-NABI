@@ -45,7 +45,7 @@ init_task(unsigned long clone_flags, gaddr_t child_tid, gaddr_t tls)
   /* task.robust_list_len = 0; */
 
   if (clone_flags & LINUX_CLONE_SETTLS) {
-    vmm_write_vmcs(VMCS_GUEST_FS_BASE, tls);
+    vmm_set_tls(tls);
   }
 }
 
@@ -97,17 +97,18 @@ struct clone_thread_arg {
 static void*
 __start_thread(struct clone_thread_arg *arg)
 {
-  uint64_t rip;
-
   pthread_mutex_lock(&arg->mutex);
 
   printk("__start_thread\n");
 
   vmm_create_vcpu(&arg->vcpu_snapshot);
-  vmm_write_register(HV_X86_RAX, 0);
-  vmm_write_register(HV_X86_RSP, arg->newsp);
-  vmm_read_register(HV_X86_RIP, &rip);
-  vmm_write_register(HV_X86_RIP, rip + 2);
+  /* The child returns 0 from clone, on the new stack, at the instruction after
+   * the clone syscall. vmm_syscall_return does the same PC advance the main
+   * loop applies to the parent - rip+2 on x86, nothing on aarch64 where the
+   * snapshot's PC is already past the svc. */
+  vmm_set_reg(VREG_RET, 0);
+  vmm_set_reg(VREG_SP, arg->newsp);
+  vmm_syscall_return();
 
   pthread_rwlock_wrlock(&proc.lock);
   proc.nr_tasks++;

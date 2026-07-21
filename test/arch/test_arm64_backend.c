@@ -307,6 +307,42 @@ test_fp_not_trapped(void)
         "not set", kind_name(e.kind));
 }
 
+static void
+test_tls_register(void)
+{
+  printf("vmm_set_tls writes TPIDR_EL0, guest reads it with mrs\n");
+
+  /*
+   *   mrs x0, tpidr_el0     -- guest reads its thread pointer
+   *   mov x8, #93 ; svc #0  -- hand it back so the host can check
+   */
+  const uint32_t MRS_X0_TPIDR = 0xD53BD040u;
+
+  vmm_set_tls(0xFEEDBEEF);
+
+  /* Host reads it back through the same accessor. */
+  uint64_t got = 0;
+  vmm_get_tls(&got);
+  CHECK(got == 0xFEEDBEEF, "vmm_get_tls = 0x%llx, want 0xFEEDBEEF", got);
+
+  put32(EL0_CODE_OFF +  0, MRS_X0_TPIDR);
+  put32(EL0_CODE_OFF +  4, MOVZ(8, SYS_EXIT));
+  put32(EL0_CODE_OFF +  8, INSN_SVC0);
+  put32(EL0_CODE_OFF + 12, INSN_B_BACK2);
+
+  start_el0();
+
+  struct vm_exit e;
+  CHECK(vmm_run(&e) == 0, "vmm_run failed");
+  CHECK(e.kind == EXIT_SYSCALL, "got %s, want EXIT_SYSCALL", kind_name(e.kind));
+
+  uint64_t x0 = 0;
+  vmm_get_reg(VREG_ARG0, &x0);
+  CHECK(x0 == 0xFEEDBEEF,
+        "guest mrs tpidr_el0 = 0x%llx, want 0xFEEDBEEF - the thread pointer "
+        "the host set is not what the guest sees", x0);
+}
+
 int
 main(void)
 {
@@ -320,6 +356,7 @@ main(void)
   test_write_abort_reports_write();
   test_brk_is_sigtrap();
   test_fp_not_trapped();
+  test_tls_register();
 
   vmm_destroy_vcpu();
   vmm_destroy();

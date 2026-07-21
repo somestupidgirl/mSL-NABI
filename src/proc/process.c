@@ -439,23 +439,32 @@ DEFINE_SYSCALL(arch_prctl, int, code, gaddr_t, addr)
 {
   uint64_t t;
 
+  /*
+   * arch_prctl is an x86-64 syscall with no aarch64 number - the generic
+   * unistd table has no such entry, so on aarch64 this handler is compiled but
+   * never dispatched. The FS base is the thread pointer, so it goes through the
+   * arch-neutral TLS accessor (TPIDR_EL0 on aarch64). The GS base has no
+   * aarch64 counterpart at all and stays behind __x86_64__.
+   */
   switch (code) {
-  case LINUX_ARCH_SET_GS:
-    vmm_write_vmcs(VMCS_GUEST_GS_BASE, addr);
-    return 0;
   case LINUX_ARCH_SET_FS:
-    vmm_write_vmcs(VMCS_GUEST_FS_BASE, addr);
+    vmm_set_tls(addr);
     return 0;
   case LINUX_ARCH_GET_FS:
-    vmm_read_vmcs(VMCS_GUEST_FS_BASE, &t);
+    vmm_get_tls(&t);
     if (copy_to_user(addr, &t, sizeof t))
       return -LINUX_EFAULT;
+    return 0;
+#ifdef __x86_64__
+  case LINUX_ARCH_SET_GS:
+    vmm_write_vmcs(VMCS_GUEST_GS_BASE, addr);
     return 0;
   case LINUX_ARCH_GET_GS:
     vmm_read_vmcs(VMCS_GUEST_GS_BASE, &t);
     if (copy_to_user(addr, &t, sizeof t))
       return -LINUX_EFAULT;
     return 0;
+#endif
   default:
     return -LINUX_EINVAL;
   }

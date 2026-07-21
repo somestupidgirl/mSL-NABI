@@ -12,9 +12,12 @@
 | 3–6 | not started |
 
 `make check` runs everything that can run on this machine. A whole arm64 `nabi`
-does not link yet: [src/mm/mm.c](src/mm/mm.c),
-[src/proc/exec.c](src/proc/exec.c), [src/ipc/signal.c](src/ipc/signal.c) and
-[src/main.c](src/main.c) still reach for VMCS fields and `HV_X86_*` registers.
+does not link yet, but the set of blocking files is down to three:
+[src/main.c](src/main.c) (guest machine setup), [src/proc/exec.c](src/proc/exec.c)
+(the ELF ABI, §3.5.2 and Phase 3) and [src/ipc/signal.c](src/ipc/signal.c)
+(signal frames, Phase 4). Everything else compiles for arm64 - including
+mm.c/mmap.c/shm.c/fork.c/process.c/base.c - through the neutral interface in
+[include/arch.h](include/arch.h).
 
 ---
 
@@ -183,7 +186,13 @@ readable directly by user code with `mrs`. It is established by the `tls` argume
 to `clone`, and thereafter never goes through the kernel.
 
 So: delete the `arch_prctl` path, and make `clone` write `TPIDR_EL0` via
-`hv_vcpu_set_sys_reg`. Also confirm `TPIDR_EL0` is saved/restored across the
+`hv_vcpu_set_sys_reg`.
+
+**Partly done.** [include/arch.h](include/arch.h) now has `vmm_set_tls` /
+`vmm_get_tls` (FS base on x86, `TPIDR_EL0` on aarch64), verified on hardware -
+the guest's `mrs tpidr_el0` reads back exactly what the host set. `clone`'s
+`CLONE_SETTLS` path and `arch_prctl`'s FS cases both route through it;
+`arch_prctl` is compiled but unreachable on aarch64 (no such syscall number). Also confirm `TPIDR_EL0` is saved/restored across the
 fork snapshot and signal delivery — if it isn't, every threaded program breaks in a
 way that looks like random memory corruption.
 

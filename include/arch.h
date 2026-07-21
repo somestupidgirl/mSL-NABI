@@ -122,4 +122,21 @@ void vmm_set_reg(enum vreg, uint64_t);
  */
 void vmm_syscall_return(void);
 
+/*
+ * The guest thread pointer.
+ *
+ * x86-64 stores it in the FS base (set by arch_prctl(ARCH_SET_FS) or the clone
+ * tls argument, read back through the FS-base MSR/VMCS field). aarch64 stores it
+ * in TPIDR_EL0, which user code reads directly with `mrs` and never through a
+ * syscall - so there is no arch_prctl on aarch64 at all, and clone's tls
+ * argument is the only way it is ever set.
+ *
+ * Both funnel here so the arch-neutral clone path in src/proc/fork.c sets TLS
+ * the same way on both. arch_prctl (x86-only) also uses it for ARCH_SET_FS /
+ * ARCH_GET_FS; ARCH_SET_GS has no aarch64 counterpart and stays x86-only at its
+ * call site.
+ */
+void vmm_set_tls(uint64_t);
+void vmm_get_tls(uint64_t *);
+
 #endif

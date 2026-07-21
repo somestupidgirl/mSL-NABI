@@ -110,11 +110,13 @@ copy_to_user(gaddr_t to_ptr, const void *src, size_t n)
 DEFINE_SYSCALL(unimplemented, uint64_t, a1, uint64_t, a2, uint64_t, a3,
                               uint64_t, a4, uint64_t, a5, uint64_t, a6)
 {
-  uint64_t rax;
+  /* Only used to name the syscall in the warning, so read it through the
+   * arch-neutral interface rather than a raw x86 register. */
+  uint64_t nr;
 
-  vmm_read_register(HV_X86_RAX, &rax);
+  vmm_get_reg(VREG_SYSNR, &nr);
 
-  warnk("unimplemented syscall: %lld\n", rax);
+  warnk("unimplemented syscall: %lld\n", nr);
   return -LINUX_ENOSYS;
 }
 

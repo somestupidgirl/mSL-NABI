@@ -181,6 +181,19 @@ vmm_set_reg(enum vreg reg, uint64_t val)
 }
 
 void
+vmm_set_tls(uint64_t tls)
+{
+  /* The thread pointer is the FS base on x86-64. */
+  vmm_write_vmcs(VMCS_GUEST_FS_BASE, tls);
+}
+
+void
+vmm_get_tls(uint64_t *tls)
+{
+  vmm_read_vmcs(VMCS_GUEST_FS_BASE, tls);
+}
+
+void
 vmm_syscall_return(void)
 {
   /* Step over the two-byte `syscall`. The #UD leaves RIP pointing at it, so

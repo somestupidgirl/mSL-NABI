@@ -94,6 +94,21 @@ vmm_set_reg(enum vreg reg, uint64_t val)
 }
 
 void
+vmm_set_tls(uint64_t tls)
+{
+  /* aarch64 keeps the thread pointer in TPIDR_EL0, which the guest reads
+   * directly with `mrs`. Set here from clone's tls argument; never from a
+   * syscall, because aarch64 has no arch_prctl. */
+  vmm_arm64_write_sysreg(HV_SYS_REG_TPIDR_EL0, tls);
+}
+
+void
+vmm_get_tls(uint64_t *tls)
+{
+  vmm_arm64_read_sysreg(HV_SYS_REG_TPIDR_EL0, tls);
+}
+
+void
 vmm_syscall_return(void)
 {
   /*
