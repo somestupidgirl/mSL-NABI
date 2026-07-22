@@ -36,6 +36,17 @@ else
     fail=1
 fi
 
+# mmaptest: mmap a page, write() from it, munmap it, exit(0). Exercises the
+# mmap/munmap syscall path and vmm_munmap in the real runtime.
+cp "$here/mmaptest" "$root/"; chmod +x "$root/mmaptest"
+out=$("$NABI" -m "$root" /mmaptest); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "mmap+munmap ok" ]; then
+    echo "  ok  mmaptest -> \"$out\", exit 0"
+else
+    echo "  FAIL mmaptest -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else

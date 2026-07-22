@@ -8,6 +8,8 @@ guest-code cache sync.
 - `exit42` — `exit(42)`; checks exit-code propagation.
 - `hello`  — `write(1, "hello arm64!\n", 14); exit(0)`; checks a syscall with
   guest memory arguments and stdout.
+- `mmaptest` — mmap a page, write() from it, munmap it, exit(0); exercises the
+  mmap/munmap syscall path and vmm_munmap in the real runtime.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources
