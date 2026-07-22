@@ -65,6 +65,12 @@ panic(const char *fmt, ...)
 /* pt_arm64 helpers the test uses to place code/stack, as exec.c's do_mmap will. */
 void *pt_alloc_and_map(gaddr_t va, int prot);
 
+/* init_vkernel_machine maps the signal-return trampoline through this, defined
+ * in signal_arm64.c - which this test does not link (it is the whole point of
+ * standing in for main.c without the full binary). The boot guest never raises
+ * a signal, so a no-op stub is enough. */
+void arch_setup_sigreturn(void) {}
+
 /*
  * The loader syncs freshly written guest code through vmm_sync_guest_code(gva),
  * which resolves the address with guest_to_host - normally the mm_region walk in

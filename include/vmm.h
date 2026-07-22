@@ -62,6 +62,8 @@ struct vcpu_snapshot {
 hv_vcpu_exit_t *vmm_arm64_exit_record(void);
 
 void vmm_arm64_read_reg(hv_reg_t, uint64_t *);
+void vmm_arm64_read_simd(hv_simd_fp_reg_t, void *out16);
+void vmm_arm64_write_simd(hv_simd_fp_reg_t, const void *in16);
 void vmm_arm64_write_reg(hv_reg_t, uint64_t);
 void vmm_arm64_read_sysreg(hv_sys_reg_t, uint64_t *);
 void vmm_arm64_write_sysreg(hv_sys_reg_t, uint64_t);

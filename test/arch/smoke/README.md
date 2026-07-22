@@ -10,6 +10,9 @@ guest-code cache sync.
   guest memory arguments and stdout.
 - `mmaptest` — mmap a page, write() from it, munmap it, exit(0); exercises the
   mmap/munmap syscall path and vmm_munmap in the real runtime.
+- `sigtest` — install a SIGUSR1 handler, `kill()` self, verify the handler ran
+  and the interrupted code resumed; exercises signal-frame setup, the sigreturn
+  trampoline and rt_sigreturn.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources

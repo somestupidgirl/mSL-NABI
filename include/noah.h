@@ -84,6 +84,7 @@ l_int sas_ss_flags(uint64_t rsp);
 
 int arch_setup_sigframe(int signum);
 uint64_t arch_rt_sigreturn(void);
+void arch_setup_sigreturn(void);  /* arm64: map the sigreturn trampoline at init */
 
 /* task related data */
 

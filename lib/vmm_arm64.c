@@ -204,6 +204,28 @@ vmm_enter(void)
   return hv_vcpu_run(vcpu->vcpuid) == HV_SUCCESS ? 0 : -1;
 }
 
+/* Read/write a single 128-bit SIMD&FP register (V0..V31). Kept here, like the
+ * reset below, because they need the vcpu handle that stays private to this
+ * file; the signal frame saves and restores the FP state across handler
+ * delivery. */
+void
+vmm_arm64_read_simd(hv_simd_fp_reg_t reg, void *out16)
+{
+  hv_simd_fp_uchar16_t v;
+  if (hv_vcpu_get_simd_fp_reg(vcpu->vcpuid, reg, &v) != HV_SUCCESS)
+    panic("hv_vcpu_get_simd_fp_reg(%u) failed", reg);
+  memcpy(out16, &v, 16);
+}
+
+void
+vmm_arm64_write_simd(hv_simd_fp_reg_t reg, const void *in16)
+{
+  hv_simd_fp_uchar16_t v;
+  memcpy(&v, in16, 16);
+  if (hv_vcpu_set_simd_fp_reg(vcpu->vcpuid, reg, v) != HV_SUCCESS)
+    panic("hv_vcpu_set_simd_fp_reg(%u) failed", reg);
+}
+
 /* Zero the FP/SIMD register file. Kept here rather than in the exit file
  * because it needs the vcpu handle, which stays private to this file. */
 void

@@ -48,6 +48,11 @@ init_vkernel_machine(void)
   vmm_arm64_sync_guest_code(hva, PAGE_SIZEOF(PAGE_4KB));
 
   tramp_va = GUEST_TRAMPOLINE_VA;
+
+  /* Map the signal-return trampoline now, before the MMU is enabled: mapping it
+   * lazily during signal delivery leaves a negative walk-cache entry that guest
+   * TLBI cannot flush under HVF. */
+  arch_setup_sigreturn();
 }
 
 void

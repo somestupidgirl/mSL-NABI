@@ -47,6 +47,18 @@ else
     fail=1
 fi
 
+# sigtest: install a SIGUSR1 handler, kill() self, and verify the handler ran
+# and the interrupted code resumed. Exercises signal frame setup, the sigreturn
+# trampoline and rt_sigreturn in the real runtime.
+cp "$here/sigtest" "$root/"; chmod +x "$root/sigtest"
+out=$("$NABI" -m "$root" /sigtest); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "signal ok" ]; then
+    echo "  ok  sigtest -> \"$out\", exit 0"
+else
+    echo "  FAIL sigtest -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else
