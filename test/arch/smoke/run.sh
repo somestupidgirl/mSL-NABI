@@ -105,6 +105,17 @@ else
     fail=1
 fi
 
+# clonetid: clone with CHILD_SETTID in aarch64 arg order (as glibc fork does);
+# the child's tid must land in the child_tid pointer.
+cp "$here/clonetid" "$root/"; chmod +x "$root/clonetid"
+out=$("$NABI" -m "$root" /clonetid); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "settid ok" ]; then
+    echo "  ok  clonetid -> settid ok, exit 0"
+else
+    echo "  FAIL clonetid -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else

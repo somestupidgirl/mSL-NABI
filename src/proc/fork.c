@@ -191,8 +191,22 @@ do_clone(unsigned long clone_flags, unsigned long newsp, gaddr_t parent_tid, gad
   }
 }
 
-DEFINE_SYSCALL(clone, unsigned long, clone_flags, unsigned long, newsp, gaddr_t, parent_tid, gaddr_t, child_tid, gaddr_t, tls)
+DEFINE_SYSCALL(clone, unsigned long, clone_flags, unsigned long, newsp, gaddr_t, parent_tid, gaddr_t, arg4, gaddr_t, arg5)
 {
+  /*
+   * The last two clone arguments are architecture-ordered. x86-64 is
+   * (flags, stack, parent_tid, child_tid, tls); aarch64 (CONFIG_CLONE_BACKWARDS)
+   * is (flags, stack, parent_tid, tls, child_tid) - child_tid and tls swapped.
+   * do_clone and init_task want the x86-64 order, so normalize here. glibc's
+   * fork() passes CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID with a real child_tid,
+   * so getting this wrong writes the tid to the tls value (0) and misroutes the
+   * tls - it is not only a threads concern.
+   */
+#if defined(__aarch64__)
+  gaddr_t tls = arg4, child_tid = arg5;
+#else
+  gaddr_t child_tid = arg4, tls = arg5;
+#endif
   return do_clone(clone_flags, newsp, parent_tid, child_tid, tls);
 }
 

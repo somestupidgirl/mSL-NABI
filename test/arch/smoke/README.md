@@ -23,6 +23,8 @@ guest-code cache sync.
 - `forktest` — `fork`, the child exits with a known code, the parent `wait4`s it
   and checks the status; exercises the whole vCPU-snapshot / VM-teardown / host
   fork / reentry cycle.
+- `clonetid` — `clone` with `CHILD_SETTID` in aarch64 argument order (as glibc's
+  `fork` issues it); the child's tid must land in the `child_tid` pointer.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources

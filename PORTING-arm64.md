@@ -584,11 +584,14 @@ records them for replay. The in-process `test_arm64_reentry` isolates this rebui
 (no host fork, so no COW variable) as the load-bearing check; `forktest` covers the
 real thing end to end.
 
-`clone`'s aarch64 argument order swaps `child_tid`/`tls` versus x86, which only
-matters once threads (a second live vCPU) are supported — still guarded off.
+`clone`'s aarch64 argument order (CONFIG_CLONE_BACKWARDS) swaps `child_tid`/`tls`
+versus x86-64, normalized at the syscall entry in fork.c. This is not only a
+threads concern: glibc's `fork()` issues `clone` with `CLONE_CHILD_SETTID |
+CLONE_CHILD_CLEARTID` and a real `child_tid`, so the wrong order writes the tid to
+the tls value and misroutes tls (covered by the `clonetid` smoke binary).
 
-**Milestone (met for fork):** `test_arm64_reentry` and `forktest` pass. Threaded
-`clone` and a multi-vCPU snapshot remain.
+**Milestone (met for fork):** `test_arm64_reentry`, `forktest` and `clonetid`
+pass. Threaded `clone` (a second live vCPU) and a multi-vCPU snapshot remain.
 
 ### Phase 5 — dynamic linking and rootfs
 
