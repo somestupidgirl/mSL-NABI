@@ -20,6 +20,9 @@ guest-code cache sync.
   `RLIMIT_NOFILE`; covers two syscalls modern glibc/musl need at startup.
 - `pptest` — `ppoll` over a self-pipe: the timeout path (nothing ready) and the
   data-ready path (POLLIN). `ppoll` is aarch64's primary poll.
+- `forktest` — `fork`, the child exits with a known code, the parent `wait4`s it
+  and checks the status; exercises the whole vCPU-snapshot / VM-teardown / host
+  fork / reentry cycle.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources

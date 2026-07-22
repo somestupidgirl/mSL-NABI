@@ -45,18 +45,33 @@ void vmm_enable_native_msr(uint32_t, bool);
 #include <Hypervisor/Hypervisor.h>
 
 /*
- * Provisional. The x86 snapshot is a register list, a masked VMCS field list
- * and a 2496-byte fxsave area; the aarch64 equivalent is x0-x30, SP, PC,
- * PSTATE, TPIDR_EL0 and the FPSIMD file. Fleshing that out belongs with the
- * fork/signal work in Phase 4 - see PORTING-arm64.md - so for now this carries
- * only what the backend itself touches.
+ * The full resumable vCPU state for fork/clone (Phase 4). Everything that dies
+ * with the vCPU on hv_vm_destroy: the general registers, the banked EL0 state
+ * (SP_EL0/ELR_EL1/SPSR_EL1 - a snapshot is taken while the guest is parked in
+ * the EL1 trampoline, so HV_REG_PC/CPSR are the trampoline's own eret, not the
+ * guest's), the thread pointer, the FP/SIMD file, and the control system
+ * registers that describe the address space (SCTLR/CPACR/MAIR/TCR, the table
+ * base TTBR0 and the vector base VBAR). Capturing the control registers rather
+ * than reconstructing them keeps reentry entirely inside the backend - no reach
+ * into the page-table or machine-setup layers - and restores exactly what ran.
  */
 struct vcpu_snapshot {
-  uint64_t x[31];
-  uint64_t sp;
-  uint64_t pc;
-  uint64_t pstate;
+  uint64_t x[31];        /* X0..X30 */
+  uint64_t sp;           /* SP_EL0 */
+  uint64_t pc;           /* HV_REG_PC (the trampoline eret at snapshot time) */
+  uint64_t pstate;       /* CPSR */
+  uint64_t elr_el1;      /* banked EL0 return PC */
+  uint64_t spsr_el1;     /* banked EL0 PSTATE */
   uint64_t tpidr_el0;
+  uint64_t sctlr_el1;
+  uint64_t cpacr_el1;
+  uint64_t mair_el1;
+  uint64_t tcr_el1;
+  uint64_t ttbr0_el1;
+  uint64_t vbar_el1;
+  uint64_t fpcr;
+  uint64_t fpsr;
+  uint8_t  v[32][16];    /* Q0..Q31 */
 };
 
 hv_vcpu_exit_t *vmm_arm64_exit_record(void);
@@ -71,6 +86,7 @@ void vmm_arm64_write_sysreg(hv_sys_reg_t, uint64_t);
 void vmm_arm64_sync_guest_code(void *hva, size_t len);
 void vmm_arm64_map_stage2(gaddr_t ipa, size_t size, int prot, void *haddr);
 void vmm_arm64_unmap_stage2(gaddr_t ipa, size_t size);
+void vmm_arm64_replay_stage2(void);
 void vmm_arm64_install_trampoline(void *hva, gaddr_t ipa);
 void vmm_arm64_init_vcpu(void);
 void vmm_arm64_enter_el0(gaddr_t pc, gaddr_t sp, gaddr_t el1_eret_stub);

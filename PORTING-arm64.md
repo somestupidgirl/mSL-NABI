@@ -12,13 +12,13 @@ binaries end to end** - `make check-smoke` loads and runs static ELFs that
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h) |
 | 2 — arm64 VMM backend | **done** — backend, stage-1 translation, two-stage `vmm_mmap`, guest boot to EL0, all hardware-verified (`make check-arm64`) |
 | 3 — syscall table + ABI | **done for the static case** — generated aarch64 table (§3.2), exec.c ported, code-cache sync wired in, TLS via `TPIDR_EL0`, `struct stat` corrected to the aarch64 layout (§3.5.4), `statx`/`prlimit64` wired. A static ELF loads, runs, stats, syscalls and exits (`make check-smoke`). `ppoll`/`epoll_*` and the dynamic linker still to come |
-| 4 — signals, fork, threads | **signals done** — a guest installs a handler, takes a signal, runs it at EL0 and resumes (signal_arm64.c, `make check-smoke` sigtest). fork/clone snapshot (vmm_arm64.c) still panics; the `vcpu_snapshot` rewrite is net-new |
+| 4 — signals, fork, threads | **signals and fork done** — a guest takes a signal, runs the handler at EL0 and resumes; and a guest `fork`s, both sides rebuilding the VM (snapshot / `hv_vm_destroy` / host fork / reentry, `make check-arm64` reentry test + `check-smoke` forktest). Multi-threaded `clone` (a second live vCPU) is still guarded off |
 | 5–6 | rootfs, dynamic linking, test port — not started |
 
 `make ARCH=arm64` produces a signed arm64 binary that **runs real static aarch64
 Linux ELFs** - proven by `make check-smoke`. Bounds today: a **single-threaded,
-statically-linked** guest works, signals included. Anything that forks or spawns
-a thread still hits a Phase 4 stub. `munmap` of a whole
+statically-linked** guest works, signals and `fork` included. A multi-threaded
+`clone` (a second live vCPU) still hits a Phase 4 guard. `munmap` of a whole
 region now works (§3.5.3); a sub-16KiB-block partial split still panics. Three real host-side bugs stood between "links"
 and "runs", all found by the first smoke test and fixed: a W^X-incompatible RWX
 mmap of the malloc arena, an unreachable `RLIMIT_NOFILE`-derived kernel fd range
@@ -566,16 +566,29 @@ Drop `arch_prctl`; move TLS to `TPIDR_EL0` in `clone`.
 
 ### Phase 4 — signals, fork, threads
 
-Rewrite the `sigcontext` marshalling in
-[src/ipc/signal.c](src/ipc/signal.c) for aarch64 (§3.4).
-Add the sigreturn trampoline page.
-Rewrite `struct vcpu_snapshot` ([include/vmm.h:11](include/vmm.h#L11)) — the
-`vcpu_reg[]`/`vmcs[]`/2496-byte `fpu_states` triple becomes `x0`–`x30`, `SP`,
-`PC`, `PSTATE`, `TPIDR_EL0`, `V0`–`V31`, `FPCR`, `FPSR`. Update
-[src/proc/fork.c](src/proc/fork.c) and `vmm_reentry`
-([lib/vmm.c:250](lib/vmm.c#L250)) accordingly.
+Signals: done (§3.4). Fork: done.
 
-**Milestone:** `test_fork`, `test_thread`, `test_sigaction` equivalents pass.
+`struct vcpu_snapshot` ([include/vmm.h](include/vmm.h)) is now the aarch64 state -
+`x0`–`x30`, `SP_EL0`, `PC`/`PSTATE`, the banked `ELR_EL1`/`SPSR_EL1`, `TPIDR_EL0`,
+the FP/SIMD file, and the address-space control registers (`SCTLR`/`CPACR`/`MAIR`/
+`TCR`/`TTBR0`/`VBAR`). Capturing the control registers, rather than reconstructing
+them, keeps `vmm_reentry` entirely inside the backend.
+
+The reentry design is shaped by HVF allowing **one VM per process**: `fork` cannot
+just create a second VM, so [src/proc/fork.c](src/proc/fork.c) snapshots the vCPU,
+`hv_vm_destroy`s, host `fork`s, and rebuilds the VM on both sides. Rebuilding means
+replaying every stage-2 mapping into the fresh VM — the guest's host pages survive
+by COW, but the IPA→host associations are VM state and are lost. A granule-keyed
+registry in [lib/vmm_arm64.c](lib/vmm_arm64.c), fed by every `map`/`unmap_stage2`,
+records them for replay. The in-process `test_arm64_reentry` isolates this rebuild
+(no host fork, so no COW variable) as the load-bearing check; `forktest` covers the
+real thing end to end.
+
+`clone`'s aarch64 argument order swaps `child_tid`/`tls` versus x86, which only
+matters once threads (a second live vCPU) are supported — still guarded off.
+
+**Milestone (met for fork):** `test_arm64_reentry` and `forktest` pass. Threaded
+`clone` and a multi-vCPU snapshot remain.
 
 ### Phase 5 — dynamic linking and rootfs
 

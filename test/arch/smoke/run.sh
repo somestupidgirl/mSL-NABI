@@ -93,6 +93,18 @@ else
     fail=1
 fi
 
+# forktest: fork, the child exits with a known code, the parent wait4()s it.
+# Exercises the whole snapshot / hv_vm_destroy / host fork / reentry cycle.
+cp "$here/forktest" "$root/"; chmod +x "$root/forktest"
+out=$("$NABI" -m "$root" /forktest); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "child
+parent" ]; then
+    echo "  ok  forktest -> child + parent, exit 0"
+else
+    echo "  FAIL forktest -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else

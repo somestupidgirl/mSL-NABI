@@ -21,11 +21,30 @@
 #include "vmm.h"
 #include "mm.h"
 #include "util/list.h"
+#include "util/khash.h"
 
 #include <Hypervisor/Hypervisor.h>
 #include <libkern/OSCacheControl.h>
 
 #include "arm64/vm.h"
+
+/*
+ * Stage-2 mapping registry.
+ *
+ * Every hv_vm_map goes through vmm_arm64_map_stage2 and every hv_vm_unmap
+ * through vmm_arm64_unmap_stage2, both at 16KiB-granule granularity (pt_arm64.c
+ * maps whole chunks and vmm_mmap regions; vmm_munmap unmaps one granule at a
+ * time). Keeping a granule-keyed record of what host memory backs each IPA is
+ * what makes fork possible: HVF allows only one VM per process, so fork tears the
+ * VM down and rebuilds it on both sides (see src/proc/fork.c), and rebuilding
+ * means replaying every stage-2 mapping into the fresh VM. The guest's host pages
+ * themselves survive the fork by COW; only the IPA->host associations, which are
+ * VM state, are lost and must be replayed. Keyed by IPA so map/unmap/replay are
+ * all O(1) per granule and independent of pt_arm64.c's IPA layout.
+ */
+struct s2_ent { void *haddr; int prot; };
+KHASH_MAP_INIT_INT64(s2, struct s2_ent)
+static khash_t(s2) *s2_map;
 
 struct vcpu {
   struct list_head list;
@@ -58,6 +77,28 @@ vmm_arm64_exit_record(void)
  * up front; violating it otherwise yields HV_BAD_ARGUMENT from deep in the
  * framework, which says nothing about which of the three arguments was wrong.
  */
+/* Record (or overwrite) the host backing of every granule in an IPA range, so
+ * the mapping can be replayed into a fresh VM after fork. */
+static void
+s2_record(gaddr_t ipa, size_t size, int prot, void *haddr)
+{
+  for (size_t off = 0; off < size; off += STAGE2_GRANULE) {
+    int ret;
+    khiter_t k = kh_put(s2, s2_map, ipa + off, &ret);
+    kh_value(s2_map, k) = (struct s2_ent){ (char *) haddr + off, prot };
+  }
+}
+
+static void
+s2_forget(gaddr_t ipa, size_t size)
+{
+  for (size_t off = 0; off < size; off += STAGE2_GRANULE) {
+    khiter_t k = kh_get(s2, s2_map, ipa + off);
+    if (k != kh_end(s2_map))
+      kh_del(s2, s2_map, k);
+  }
+}
+
 void
 vmm_arm64_map_stage2(gaddr_t ipa, size_t size, int prot, void *haddr)
 {
@@ -69,6 +110,7 @@ vmm_arm64_map_stage2(gaddr_t ipa, size_t size, int prot, void *haddr)
   if (hv_vm_map(haddr, ipa, size, prot) != HV_SUCCESS) {
     panic("hv_vm_map failed\n");
   }
+  s2_record(ipa, size, prot, haddr);
 }
 
 void
@@ -76,6 +118,21 @@ vmm_arm64_unmap_stage2(gaddr_t ipa, size_t size)
 {
   assert((size & (STAGE2_GRANULE - 1)) == 0);
   hv_vm_unmap(ipa, size);
+  s2_forget(ipa, size);
+}
+
+/* Replay the whole registry into the current (freshly created) VM. Used by
+ * vmm_reentry after fork to restore every stage-2 mapping. */
+void
+vmm_arm64_replay_stage2(void)
+{
+  gaddr_t ipa;
+  struct s2_ent ent;
+  kh_foreach(s2_map, ipa, ent, {
+    if (hv_vm_map(ent.haddr, ipa, STAGE2_GRANULE, ent.prot) != HV_SUCCESS)
+      panic("hv_vm_map failed replaying stage-2 IPA 0x%llx",
+            (unsigned long long) ipa);
+  });
 }
 
 /* ------------------------------------------------------- VM lifecycle */
@@ -88,6 +145,7 @@ vmm_create(void)
   pthread_rwlock_init(&alloc_lock, NULL);
   INIT_LIST_HEAD(&vcpus);
   nr_vcpus = 0;
+  s2_map = kh_init(s2);
 
   ret = hv_vm_create(NULL);
   if (ret != HV_SUCCESS) {
@@ -125,6 +183,17 @@ vmm_destroy(void)
   }
 
   printk("successfully destroyed the vm\n");
+
+  /*
+   * Reset the vCPU bookkeeping so a following vmm_reentry (fork) can recreate
+   * from a clean slate - vmm_create_vcpu asserts vcpu == NULL. Single-threaded
+   * only, which the fork path guards; the thread-local vcpu is the sole entry.
+   * The stage-2 registry is deliberately left intact: reentry replays it.
+   */
+  free(vcpu);
+  vcpu = NULL;
+  INIT_LIST_HEAD(&vcpus);
+  nr_vcpus = 0;
 }
 
 void
@@ -357,39 +426,104 @@ vmm_arm64_enter_el0(gaddr_t pc, gaddr_t sp, gaddr_t el1_eret_stub)
 /* ------------------------------------------------ snapshot / restore (Phase 4)
  *
  * fork and multi-threaded clone snapshot a vCPU and restore it into a fresh VM.
- * On x86 (vmm_x86.c) this walks a register list, the masked VMCS fields and the
- * fxsave area. The aarch64 equivalent - x0-x30, SP, PC, PSTATE, TPIDR_EL0 and
- * the FPSIMD file - is Phase 4, alongside the real struct vcpu_snapshot. None
- * of it is on the path to loading and running a single-threaded binary, so for
- * now these are honest stubs: fork will hit them and stop loudly rather than
- * corrupt guest state.
+ * HVF allows only one VM per process, so fork tears the VM down and both sides
+ * rebuild it (src/proc/fork.c): snapshot the vCPU, hv_vm_destroy, host fork(),
+ * then hv_vm_create + replay the stage-2 registry + restore the vCPU on each
+ * side. The counterpart of the x86 register-list/VMCS/fxsave dance in vmm_x86.c.
  */
 void
 vmm_snapshot_vcpu(struct vcpu_snapshot *snapshot)
 {
-  (void) snapshot;
-  panic("vmm_snapshot_vcpu: fork/clone snapshot not implemented for arm64 yet "
-        "(Phase 4). See PORTING-arm64.md.");
+  for (int i = 0; i <= 30; i++)
+    vmm_arm64_read_reg(HV_REG_X0 + i, &snapshot->x[i]);
+  vmm_arm64_read_sysreg(HV_SYS_REG_SP_EL0, &snapshot->sp);
+  vmm_arm64_read_reg(HV_REG_PC, &snapshot->pc);
+  vmm_arm64_read_reg(HV_REG_CPSR, &snapshot->pstate);
+  vmm_arm64_read_sysreg(HV_SYS_REG_ELR_EL1, &snapshot->elr_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_SPSR_EL1, &snapshot->spsr_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_TPIDR_EL0, &snapshot->tpidr_el0);
+
+  /* The address-space control registers, so reentry needs no reach into the
+   * page-table or machine-setup layers to rebuild them. */
+  vmm_arm64_read_sysreg(HV_SYS_REG_SCTLR_EL1, &snapshot->sctlr_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_CPACR_EL1, &snapshot->cpacr_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_MAIR_EL1, &snapshot->mair_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_TCR_EL1, &snapshot->tcr_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_TTBR0_EL1, &snapshot->ttbr0_el1);
+  vmm_arm64_read_sysreg(HV_SYS_REG_VBAR_EL1, &snapshot->vbar_el1);
+
+  vmm_arm64_read_reg(HV_REG_FPCR, &snapshot->fpcr);
+  vmm_arm64_read_reg(HV_REG_FPSR, &snapshot->fpsr);
+  for (int i = 0; i < 32; i++)
+    vmm_arm64_read_simd(HV_SIMD_FP_REG_Q0 + i, &snapshot->v[i]);
 }
 
 void
 vmm_snapshot(struct vmm_snapshot *snapshot)
 {
-  (void) snapshot;
-  panic("vmm_snapshot: fork not implemented for arm64 yet (Phase 4).");
+  pthread_rwlock_rdlock(&alloc_lock);
+  if (nr_vcpus > 1) {
+    fprintf(stderr, "multi-threaded fork is not implemented yet.\n");
+    exit(1);
+  }
+  vmm_snapshot_vcpu(&snapshot->first_vcpu_snapshot);
+  pthread_rwlock_unlock(&alloc_lock);
 }
 
 void
 vmm_restore_vcpu(struct vcpu_snapshot *snapshot)
 {
-  (void) snapshot;
-  panic("vmm_restore_vcpu: fork/clone restore not implemented for arm64 yet "
-        "(Phase 4).");
+  /*
+   * The control registers first, and SCTLR (which carries the MMU-enable bit)
+   * last of them, so translation only turns on once its table base, attributes
+   * and vector base are all in place.
+   */
+  vmm_arm64_write_sysreg(HV_SYS_REG_MAIR_EL1, snapshot->mair_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_TCR_EL1, snapshot->tcr_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_TTBR0_EL1, snapshot->ttbr0_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_VBAR_EL1, snapshot->vbar_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_CPACR_EL1, snapshot->cpacr_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_SCTLR_EL1, snapshot->sctlr_el1);
+
+  for (int i = 0; i <= 30; i++)
+    vmm_arm64_write_reg(HV_REG_X0 + i, snapshot->x[i]);
+  vmm_arm64_write_sysreg(HV_SYS_REG_SP_EL0, snapshot->sp);
+  vmm_arm64_write_reg(HV_REG_PC, snapshot->pc);
+  vmm_arm64_write_reg(HV_REG_CPSR, snapshot->pstate);
+  vmm_arm64_write_sysreg(HV_SYS_REG_ELR_EL1, snapshot->elr_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_SPSR_EL1, snapshot->spsr_el1);
+  vmm_arm64_write_sysreg(HV_SYS_REG_TPIDR_EL0, snapshot->tpidr_el0);
+  vmm_arm64_write_reg(HV_REG_FPCR, snapshot->fpcr);
+  vmm_arm64_write_reg(HV_REG_FPSR, snapshot->fpsr);
+  for (int i = 0; i < 32; i++)
+    vmm_arm64_write_simd(HV_SIMD_FP_REG_Q0 + i, &snapshot->v[i]);
 }
 
 void
 vmm_reentry(struct vmm_snapshot *snapshot)
 {
-  (void) snapshot;
-  panic("vmm_reentry: fork not implemented for arm64 yet (Phase 4).");
+  hv_return_t ret;
+  bool retried = false;
+retry:
+  ret = hv_vm_create(NULL);
+  if (ret != HV_SUCCESS) {
+    /* HVF hands the just-destroyed VM's resources back asynchronously; a single
+     * yield-and-retry is enough to let that settle, matching the x86 path. */
+    if (!retried && ret == HV_NO_DEVICE) {
+      sleep(0);
+      retried = true;
+      goto retry;
+    }
+    panic("vmm_reentry: could not create the vm: error code %x", ret);
+  }
+
+  /* Guest memory (RAM, page tables, trampoline, sigreturn page) survived as host
+   * allocations; put every stage-2 mapping back into the fresh VM. */
+  vmm_arm64_replay_stage2();
+
+  /* Fresh vCPU, then restore all of its state - general registers, the banked
+   * EL0 state, and the control registers (including the MMU-enable bit) - from
+   * the snapshot. vmm_create_vcpu asserts vcpu == NULL, which vmm_destroy left. */
+  vmm_create_vcpu(NULL);
+  vmm_restore_vcpu(&snapshot->first_vcpu_snapshot);
 }
