@@ -13,6 +13,9 @@ guest-code cache sync.
 - `sigtest` — install a SIGUSR1 handler, `kill()` self, verify the handler ran
   and the interrupted code resumed; exercises signal-frame setup, the sigreturn
   trampoline and rt_sigreturn.
+- `stattest` — `fstat` a file and confirm the aarch64 `struct stat` layout:
+  `st_mode` reads back as a regular file. Guards `struct l_newstat` against
+  regressing to the x86-64 field order.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources

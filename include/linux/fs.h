@@ -168,7 +168,38 @@ struct l_dirent64 {
  * stat family of syscalls
  */
 
-struct l_newstat {
+/*
+ * The kernel's `struct stat` for newfstatat/fstat is architecture-specific, and
+ * the two layouts are genuinely different - not just padding. x86-64 orders
+ * st_nlink (8 bytes) before st_mode; aarch64 (the asm-generic layout) puts a
+ * 4-byte st_mode before a 4-byte st_nlink and drops the 8-byte nlink. Getting
+ * this wrong is silent: stat_darwin_to_linux fills by field name, so a mismatched
+ * layout just lands each value at the wrong offset - a regular file reads back
+ * with st_mode = its link count. The guest ABI follows the host arch, so the
+ * host compiler's arch macro selects the right one.
+ */
+#if defined(__arm64__) || defined(__aarch64__)
+struct l_newstat {			/* asm-generic (aarch64) */
+  l_ulong		st_dev;
+  l_ulong		st_ino;
+  l_uint		st_mode;
+  l_uint		st_nlink;
+  l_uint		st_uid;
+  l_uint		st_gid;
+  l_ulong		st_rdev;
+  l_ulong		__st_pad1;
+  l_long		st_size;
+  l_int			st_blksize;
+  l_int			__st_pad2;
+  l_long		st_blocks;
+  struct l_timespec	st_atim;
+  struct l_timespec	st_mtim;
+  struct l_timespec	st_ctim;
+  l_uint		__unused4;
+  l_uint		__unused5;
+};
+#else
+struct l_newstat {			/* x86-64 */
   l_dev_t		st_dev;
   l_ino_t		st_ino;
   l_ulong		st_nlink;
@@ -187,6 +218,7 @@ struct l_newstat {
   l_long		__unused2;
   l_long		__unused3;
 };
+#endif
 
 typedef struct {
   l_int		val[2];

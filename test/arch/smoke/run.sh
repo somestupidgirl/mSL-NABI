@@ -59,6 +59,17 @@ else
     fail=1
 fi
 
+# stattest: fstat a file and confirm the aarch64 struct stat layout (st_mode
+# reads as a regular file). Guards struct l_newstat against the x86-64 order.
+cp "$here/stattest" "$root/"; chmod +x "$root/stattest"
+out=$("$NABI" -m "$root" /stattest); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "stat ok" ]; then
+    echo "  ok  stattest -> \"$out\", exit 0"
+else
+    echo "  FAIL stattest -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else

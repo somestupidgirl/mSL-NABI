@@ -11,14 +11,14 @@ binaries end to end** - `make check-smoke` loads and runs static ELFs that
 | 0 — trap mechanism | **done**, hardware-validated, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h) |
 | 2 — arm64 VMM backend | **done** — backend, stage-1 translation, two-stage `vmm_mmap`, guest boot to EL0, all hardware-verified (`make check-arm64`) |
-| 3 — syscall table + ABI | **done for the static case** — generated aarch64 table (§3.2), exec.c ported, code-cache sync wired in, TLS via `TPIDR_EL0`. A static ELF loads, runs, syscalls and exits (`make check-smoke`). `ppoll`/`epoll_*`/`statx` and the dynamic linker still to come |
-| 4 — signals, fork, threads | **stubbed** — signal delivery (signal_arm64.c) and fork/clone snapshot (vmm_arm64.c) panic loudly; the real implementations are net-new |
+| 3 — syscall table + ABI | **done for the static case** — generated aarch64 table (§3.2), exec.c ported, code-cache sync wired in, TLS via `TPIDR_EL0`, `struct stat` corrected to the aarch64 layout (§3.5.4). A static ELF loads, runs, stats, syscalls and exits (`make check-smoke`). `ppoll`/`epoll_*`/`statx` and the dynamic linker still to come |
+| 4 — signals, fork, threads | **signals done** — a guest installs a handler, takes a signal, runs it at EL0 and resumes (signal_arm64.c, `make check-smoke` sigtest). fork/clone snapshot (vmm_arm64.c) still panics; the `vcpu_snapshot` rewrite is net-new |
 | 5–6 | rootfs, dynamic linking, test port — not started |
 
 `make ARCH=arm64` produces a signed arm64 binary that **runs real static aarch64
 Linux ELFs** - proven by `make check-smoke`. Bounds today: a **single-threaded,
-signal-free, statically-linked** guest works. Anything that forks, spawns a
-thread, or takes a delivered signal hits a Phase 4 stub. `munmap` of a whole
+statically-linked** guest works, signals included. Anything that forks or spawns
+a thread still hits a Phase 4 stub. `munmap` of a whole
 region now works (§3.5.3); a sub-16KiB-block partial split still panics. Three real host-side bugs stood between "links"
 and "runs", all found by the first smoke test and fixed: a W^X-incompatible RWX
 mmap of the malloc arena, an unreachable `RLIMIT_NOFILE`-derived kernel fd range
@@ -212,18 +212,30 @@ the guest's `mrs tpidr_el0` reads back exactly what the host set. `clone`'s
 fork snapshot and signal delivery — if it isn't, every threaded program breaks in a
 way that looks like random memory corruption.
 
-### 3.4 Signals
+### 3.4 Signals — **done**
 
 aarch64 `sigcontext` is `{ fault_address, regs[31], sp, pc, pstate, __reserved[] }`
 followed by a chain of context records (`fpsimd_context`, `esr_context`,
-`sve_context`, terminated by a null record). This replaces the 16 named-register
-copies at [src/ipc/signal.c:122-140](src/ipc/signal.c#L122).
+`sve_context`, terminated by a null record). This replaced the 16 named-register
+copies at [src/ipc/signal.c:122-140](src/ipc/signal.c#L122); the arch half now
+lives in [src/ipc/signal_arm64.c](src/ipc/signal_arm64.c), which marshals x0-x30,
+SP, one `fpsimd_context` and a null terminator.
 
 Critically: **aarch64 does not support `SA_RESTORER`.** The kernel points `x30`
-at `__kernel_rt_sigreturn` in the vDSO. Noah therefore has to map a small vDSO-like
-page containing `mov x8, #139; svc #0` and point `x30` at it when delivering a
-signal. There is no equivalent requirement on x86-64, so this is net-new work with
-no existing code to adapt.
+at `__kernel_rt_sigreturn` in the vDSO. Noah therefore maps a small vDSO-like
+page containing `mov x8, #139; svc #0` and points `x30` at it when delivering a
+signal. That page is mapped eagerly at init, before the MMU comes on — a lazy
+mapping during delivery leaves a negative walk-cache entry that guest TLBI cannot
+flush under HVF (§3.5.3).
+
+The one subtlety that cost real debugging: when a signal is delivered off the
+back of a syscall the vCPU is parked in the EL1 trampoline, so `HV_REG_PC`/`CPSR`
+hold the trampoline's own `eret`, not the guest. The interrupted EL0 PC and
+PSTATE are banked in `ELR_EL1`/`SPSR_EL1`; `save_sigcontext` reads those when
+parked at EL1 and falls back to `PC`/`CPSR` for an async interruption already at
+EL0. Delivery forces `CPSR = EL0t` so the handler does not run at EL1. Verified
+end to end by the `sigtest` smoke binary (install SIGUSR1, `kill()` self, handler
+runs, execution resumes).
 
 ### 3.5 Guest memory
 
@@ -401,6 +413,21 @@ The failure mode is worth naming because it is so misleading: the guest runs
 whatever bytes were previously at those addresses. That surfaces as arbitrary
 wrong behaviour — a stale syscall, a jump into garbage — rather than as anything
 that points at caching.
+
+### 3.5.4 `struct stat` is arch-specific — **fixed**
+
+The kernel's `struct stat` for `fstat`/`newfstatat` is not just padded
+differently between architectures, it reorders fields: x86-64 puts an 8-byte
+`st_nlink` before `st_mode`, while the asm-generic layout aarch64 uses puts a
+4-byte `st_mode` before a 4-byte `st_nlink`. `stat_darwin_to_linux` fills
+`struct l_newstat` by field name, so a single x86-shaped definition compiled for
+an aarch64 guest silently lands each value at the wrong offset — a regular file
+comes back with `st_mode` equal to its link count (1), i.e. not a regular file,
+and `cat`/`ls`-style programs break immediately. The smoke binaries never
+`stat` anything, so this stayed invisible through Phase 3. `struct l_newstat` is
+now `#if`-split by host arch (the guest ABI follows the host), and the
+`stattest` smoke binary asserts a file reads back as `S_IFREG` with a nonzero
+size.
 
 ### 3.6 Segmentation, IDT, FPU, CPUID, TSC
 
