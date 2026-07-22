@@ -201,9 +201,13 @@ generated lines were edited directly — this is exactly what a regeneration fro
 that header plus the updated x86 table would produce. Verified by the `sxtest`
 smoke binary.
 
-Still missing and needed: `ppoll`, `epoll_create1`, `epoll_pwait` (epoll wants a
-kqueue translation, a separate effort). `fstatat` is aarch64's `newfstatat`
-(nr 79) and already exists under that name.
+`ppoll` (73) is wired too: aarch64 has no plain `poll` in the set libc uses, so
+it shares poll's marshalling body and adds the relative-timespec timeout and an
+optional signal mask (installed around the wait, not atomically inside it).
+
+Still missing and needed: `epoll_create1`, `epoll_pwait` (epoll wants a kqueue
+translation, a separate effort). `fstatat` is aarch64's `newfstatat` (nr 79) and
+already exists under that name.
 
 ### 3.3 TLS
 

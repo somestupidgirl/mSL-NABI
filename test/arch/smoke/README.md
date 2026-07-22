@@ -18,6 +18,8 @@ guest-code cache sync.
   regressing to the x86-64 field order.
 - `sxtest` — `statx` a file (regular file, nonzero size) and `prlimit64`-query
   `RLIMIT_NOFILE`; covers two syscalls modern glibc/musl need at startup.
+- `pptest` — `ppoll` over a self-pipe: the timeout path (nothing ready) and the
+  data-ready path (POLLIN). `ppoll` is aarch64's primary poll.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources

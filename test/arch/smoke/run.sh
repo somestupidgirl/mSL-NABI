@@ -82,6 +82,17 @@ else
     fail=1
 fi
 
+# pptest: ppoll over a self-pipe - the timeout path and the data-ready path.
+cp "$here/pptest" "$root/"; chmod +x "$root/pptest"
+out=$("$NABI" -m "$root" /pptest); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "ppoll timeout ok
+ppoll ready ok" ]; then
+    echo "  ok  pptest -> ppoll timeout + ready, exit 0"
+else
+    echo "  FAIL pptest -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else

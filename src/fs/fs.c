@@ -2084,12 +2084,16 @@ DEFINE_SYSCALL(pselect6, int, nfds, gaddr_t, readfds_ptr, gaddr_t, writefds_ptr,
   return r;
 }
 
-DEFINE_SYSCALL(poll, gaddr_t, fds_ptr, int, nfds, int, timeout)
+/* Shared body of poll and ppoll: marshal the guest pollfd array, poll the host
+ * descriptors (kernel-owned fds are masked to -1), and write the results back.
+ * timeout is in milliseconds, -1 for no timeout - the same units poll() takes. */
+static int
+poll_common(gaddr_t fds_ptr, int nfds, int timeout)
 {
   /* FIXME! event numbers should be translated */
 
   struct pollfd *l_fds = malloc(nfds * sizeof(struct pollfd)), *d_fds = malloc(nfds * sizeof(struct pollfd));
-  
+
   if (l_fds == NULL || d_fds == NULL) {
     if (l_fds) {
       free(l_fds);
@@ -2138,6 +2142,57 @@ DEFINE_SYSCALL(poll, gaddr_t, fds_ptr, int, nfds, int, timeout)
 out:
   free(l_fds);
   free(d_fds);
+  return r;
+}
+
+DEFINE_SYSCALL(poll, gaddr_t, fds_ptr, int, nfds, int, timeout)
+{
+  return poll_common(fds_ptr, nfds, timeout);
+}
+
+/*
+ * ppoll is aarch64's primary poll (there is no plain poll in the syscall set a
+ * modern libc uses on this arch). It differs from poll in two ways: the timeout
+ * is a relative struct timespec (NULL = block forever) rather than a millisecond
+ * int, and it takes an optional signal mask to install for the duration.
+ *
+ * The mask is applied around the wait rather than atomically inside it - close
+ * enough for the common poll-with-a-mask use, though a signal delivered in the
+ * gap between installing the mask and entering poll() will not cut the wait
+ * short the way a truly atomic ppoll would. Linux leaves *tmo unmodified on
+ * return here (unlike select), so it is only read.
+ */
+DEFINE_SYSCALL(ppoll, gaddr_t, fds_ptr, int, nfds, gaddr_t, tmo_ptr, gaddr_t, sigmask_ptr, size_t, sigsetsize)
+{
+  int timeout = -1;
+  if (tmo_ptr) {
+    struct l_timespec ts;
+    if (copy_from_user(&ts, tmo_ptr, sizeof ts))
+      return -LINUX_EFAULT;
+    /* Round a sub-millisecond remainder up so a short wait is not truncated to
+     * a busy zero-timeout poll. */
+    timeout = ts.tv_sec * 1000 + (ts.tv_nsec + 999999) / 1000000;
+  }
+
+  sigset_t saved;
+  bool have_mask = false;
+  if (sigmask_ptr) {
+    if (sigsetsize != sizeof(l_sigset_t))
+      return -LINUX_EINVAL;
+    l_sigset_t lset;
+    if (copy_from_user(&lset, sigmask_ptr, sizeof lset))
+      return -LINUX_EFAULT;
+    sigset_t dset;
+    linux_to_darwin_sigset(&lset, &dset);
+    sigprocmask(SIG_SETMASK, &dset, &saved);
+    have_mask = true;
+  }
+
+  int r = poll_common(fds_ptr, nfds, timeout);
+
+  if (have_mask)
+    sigprocmask(SIG_SETMASK, &saved, NULL);
+
   return r;
 }
 
