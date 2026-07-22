@@ -70,6 +70,18 @@ else
     fail=1
 fi
 
+# sxtest: statx a file and prlimit64-query RLIMIT_NOFILE. Exercises two aarch64
+# syscalls (291, 261) that modern glibc/musl use at startup and for stat().
+cp "$here/sxtest" "$root/"; chmod +x "$root/sxtest"
+out=$("$NABI" -m "$root" /sxtest); rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "statx ok
+prlimit64 ok" ]; then
+    echo "  ok  sxtest -> statx + prlimit64, exit 0"
+else
+    echo "  FAIL sxtest -> \"$out\", exit $rc"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "smoke: PASS"
 else

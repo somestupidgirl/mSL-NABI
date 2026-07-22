@@ -16,6 +16,8 @@ guest-code cache sync.
 - `stattest` — `fstat` a file and confirm the aarch64 `struct stat` layout:
   `st_mode` reads back as a regular file. Guards `struct l_newstat` against
   regressing to the x86-64 field order.
+- `sxtest` — `statx` a file (regular file, nonzero size) and `prlimit64`-query
+  `RLIMIT_NOFILE`; covers two syscalls modern glibc/musl need at startup.
 
 The ELF binaries are committed prebuilt (as the x86 guest tests under
 `test/*/build/` are), so the check needs no cross-toolchain. The `.s` sources

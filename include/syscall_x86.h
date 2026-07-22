@@ -305,7 +305,7 @@
   SYSCALL(299, unimplemented)                   \
   SYSCALL(300, unimplemented)                   \
   SYSCALL(301, unimplemented)                   \
-  SYSCALL(302, unimplemented)                   \
+  SYSCALL(302, prlimit64)                        \
   SYSCALL(303, unimplemented)                   \
   SYSCALL(304, unimplemented)                   \
   SYSCALL(305, unimplemented)                   \
@@ -331,6 +331,10 @@
   SYSCALL(325, unimplemented)                   \
   SYSCALL(326, unimplemented)                   \
   SYSCALL(327, unimplemented)                   \
-  SYSCALL(328, unimplemented)
+  SYSCALL(328, unimplemented)                   \
+  SYSCALL(329, unimplemented)                   \
+  SYSCALL(330, unimplemented)                   \
+  SYSCALL(331, unimplemented)                   \
+  SYSCALL(332, statx)
 
-#define NR_SYSCALLS 329
+#define NR_SYSCALLS 333

@@ -11,7 +11,7 @@ binaries end to end** - `make check-smoke` loads and runs static ELFs that
 | 0 — trap mechanism | **done**, hardware-validated, [spike/arm64-trap/](spike/arm64-trap/) |
 | 1 — arch abstraction | **done**, [include/arch.h](include/arch.h) |
 | 2 — arm64 VMM backend | **done** — backend, stage-1 translation, two-stage `vmm_mmap`, guest boot to EL0, all hardware-verified (`make check-arm64`) |
-| 3 — syscall table + ABI | **done for the static case** — generated aarch64 table (§3.2), exec.c ported, code-cache sync wired in, TLS via `TPIDR_EL0`, `struct stat` corrected to the aarch64 layout (§3.5.4). A static ELF loads, runs, stats, syscalls and exits (`make check-smoke`). `ppoll`/`epoll_*`/`statx` and the dynamic linker still to come |
+| 3 — syscall table + ABI | **done for the static case** — generated aarch64 table (§3.2), exec.c ported, code-cache sync wired in, TLS via `TPIDR_EL0`, `struct stat` corrected to the aarch64 layout (§3.5.4), `statx`/`prlimit64` wired. A static ELF loads, runs, stats, syscalls and exits (`make check-smoke`). `ppoll`/`epoll_*` and the dynamic linker still to come |
 | 4 — signals, fork, threads | **signals done** — a guest installs a handler, takes a signal, runs it at EL0 and resumes (signal_arm64.c, `make check-smoke` sigtest). fork/clone snapshot (vmm_arm64.c) still panics; the `vcpu_snapshot` rewrite is net-new |
 | 5–6 | rootfs, dynamic linking, test port — not started |
 
@@ -191,8 +191,19 @@ Originally: *"the ~30 legacy handlers can stay compiled in — glibc will never 
 them. Removing them is cleanup, not a blocker."* Half right — they stay, but only
 because the generator wires them a compat id.
 
-Missing and needed: `ppoll`, `epoll_create1`, `epoll_pwait`, `statx`.
-`fstatat` is aarch64's `newfstatat` (nr 79) and already exists under that name.
+`statx` (291) and `prlimit64` (261) are now wired: handlers added (statx repacks
+the same darwin stat newfstatat uses into the fixed 256-byte `struct statx`;
+prlimit64 reuses the rlimit path and supports the calling process), the names
+added to [syscall_x86.h](include/syscall_x86.h) so the generator counts them as
+implemented, and their two aarch64 slots flipped from `unimplemented`. The v6.6
+`unistd.h` input was not kept around, so rather than reconstruct it the two
+generated lines were edited directly — this is exactly what a regeneration from
+that header plus the updated x86 table would produce. Verified by the `sxtest`
+smoke binary.
+
+Still missing and needed: `ppoll`, `epoll_create1`, `epoll_pwait` (epoll wants a
+kqueue translation, a separate effort). `fstatat` is aarch64's `newfstatat`
+(nr 79) and already exists under that name.
 
 ### 3.3 TLS
 

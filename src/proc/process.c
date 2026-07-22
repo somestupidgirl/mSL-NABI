@@ -342,6 +342,51 @@ DEFINE_SYSCALL(setrlimit, unsigned int, resource, gaddr_t, rlim)
   return -LINUX_ENOSYS;
 }
 
+/*
+ * prlimit64 is how modern glibc/musl both query and set resource limits (plain
+ * getrlimit/setrlimit are routed through it). Only the calling process is
+ * supported - pid 0 or our own pid - since targeting another process would need
+ * a handle we do not keep; glibc passes 0. The old limit, if requested, is the
+ * value before the new one is applied. struct l_rlimit is already the 64-bit
+ * rlimit64 shape, so no separate conversion is needed.
+ */
+DEFINE_SYSCALL(prlimit64, int, pid, unsigned int, l_resource, gaddr_t, new_ptr, gaddr_t, old_ptr)
+{
+  if (pid != 0 && pid != (int) getpid())
+    return -LINUX_EPERM;
+  if (l_resource >= LINUX_RLIM_NLIMITS)
+    return -LINUX_EINVAL;
+
+  int resource = linux_to_darwin_rlimopts(l_resource);
+
+  struct rlimit rl;
+  int r = syswrap(getrlimit(resource, &rl));
+  if (r < 0)
+    return r;
+
+  if (old_ptr) {
+    struct l_rlimit old;
+    darwin_to_linux_rlimit(resource, &rl, &old);
+    if (copy_to_user(old_ptr, &old, sizeof old))
+      return -LINUX_EFAULT;
+  }
+
+  if (new_ptr) {
+    struct l_rlimit newl;
+    if (copy_from_user(&newl, new_ptr, sizeof newl))
+      return -LINUX_EFAULT;
+    struct rlimit drl = {
+      .rlim_cur = newl.rlim_cur == LINUX_RLIM_INFINITY ? RLIM_INFINITY : newl.rlim_cur,
+      .rlim_max = newl.rlim_max == LINUX_RLIM_INFINITY ? RLIM_INFINITY : newl.rlim_max,
+    };
+    r = syswrap(setrlimit(resource, &drl));
+    if (r < 0)
+      return r;
+  }
+
+  return 0;
+}
+
 DEFINE_SYSCALL(exit, int, reason)
 {
   if (task.clear_child_tid) {

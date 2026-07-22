@@ -267,7 +267,7 @@
   SYSCALL(258, unimplemented) \
   SYSCALL(259, unimplemented) \
   SYSCALL(260, wait4) \
-  SYSCALL(261, unimplemented) \
+  SYSCALL(261, prlimit64) \
   SYSCALL(262, unimplemented) \
   SYSCALL(263, unimplemented) \
   SYSCALL(264, unimplemented) \
@@ -297,7 +297,7 @@
   SYSCALL(288, unimplemented) \
   SYSCALL(289, unimplemented) \
   SYSCALL(290, unimplemented) \
-  SYSCALL(291, unimplemented) \
+  SYSCALL(291, statx) \
   SYSCALL(292, unimplemented) \
   SYSCALL(293, unimplemented) \
   SYSCALL(294, unimplemented) \

@@ -1328,6 +1328,55 @@ DEFINE_SYSCALL(newfstatat, int, dirfd, gstr_t, path_ptr, gaddr_t, st_ptr, int, f
   return r;
 }
 
+/*
+ * statx is what modern glibc/musl route stat()/lstat()/fstatat() through. It
+ * reuses the same fstatat fs op as newfstatat and then repacks the arch-specific
+ * struct l_newstat into the fixed struct l_statx (field-for-field, all names are
+ * common to both stat layouts). Only the SYMLINK_NOFOLLOW lookup flag is honored
+ * from `flags`; the AT_STATX_* sync hints and AT_EMPTY_PATH are not, and `mask`
+ * is advisory - we always return the STATX_BASIC_STATS set. btime is not filled.
+ */
+DEFINE_SYSCALL(statx, int, dirfd, gstr_t, path_ptr, int, flags, unsigned int, mask, gaddr_t, stx_ptr)
+{
+  char pathname[LINUX_PATH_MAX];
+  if (strncpy_from_user(pathname, path_ptr, sizeof pathname) < 0)
+    return -LINUX_EFAULT;
+
+  int grab_flags = flags & LINUX_AT_SYMLINK_NOFOLLOW ? LOOKUP_NOFOLLOW : 0;
+  struct path path;
+  int r = vfs_grab_dir(dirfd, pathname, grab_flags, &path);
+  if (r < 0)
+    return r;
+
+  struct l_newstat st;
+  r = path.fs->ops->fstatat(path.fs, path.dir, path.subpath, &st,
+                            flags & LINUX_AT_SYMLINK_NOFOLLOW);
+  vfs_ungrab_dir(&path);
+  if (r < 0)
+    return r;
+
+  struct l_statx stx;
+  memset(&stx, 0, sizeof stx);
+  stx.stx_mask       = LINUX_STATX_BASIC_STATS;
+  stx.stx_blksize    = st.st_blksize;
+  stx.stx_nlink      = st.st_nlink;
+  stx.stx_uid        = st.st_uid;
+  stx.stx_gid        = st.st_gid;
+  stx.stx_mode       = st.st_mode;
+  stx.stx_ino        = st.st_ino;
+  stx.stx_size       = st.st_size;
+  stx.stx_blocks     = st.st_blocks;
+  stx.stx_atime.tv_sec  = st.st_atim.tv_sec;  stx.stx_atime.tv_nsec = st.st_atim.tv_nsec;
+  stx.stx_mtime.tv_sec  = st.st_mtim.tv_sec;  stx.stx_mtime.tv_nsec = st.st_mtim.tv_nsec;
+  stx.stx_ctime.tv_sec  = st.st_ctim.tv_sec;  stx.stx_ctime.tv_nsec = st.st_ctim.tv_nsec;
+  stx.stx_rdev_major = major(st.st_rdev);  stx.stx_rdev_minor = minor(st.st_rdev);
+  stx.stx_dev_major  = major(st.st_dev);   stx.stx_dev_minor  = minor(st.st_dev);
+
+  if (copy_to_user(stx_ptr, &stx, sizeof stx))
+    return -LINUX_EFAULT;
+  return 0;
+}
+
 DEFINE_SYSCALL(stat, gstr_t, path, gaddr_t, st)
 {
   return sys_newfstatat(LINUX_AT_FDCWD, path, st, 0);
