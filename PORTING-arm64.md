@@ -18,8 +18,8 @@ binaries end to end** - `make check-smoke` loads and runs static ELFs that
 `make ARCH=arm64` produces a signed arm64 binary that **runs real static aarch64
 Linux ELFs** - proven by `make check-smoke`. Bounds today: a **single-threaded,
 signal-free, statically-linked** guest works. Anything that forks, spawns a
-thread, takes a delivered signal, or needs the dynamic linker (which `mmap`s and
-`munmap`s) hits a Phase 4 stub. Three real host-side bugs stood between "links"
+thread, or takes a delivered signal hits a Phase 4 stub. `munmap` of a whole
+region now works (§3.5.3); a sub-16KiB-block partial split still panics. Three real host-side bugs stood between "links"
 and "runs", all found by the first smoke test and fixed: a W^X-incompatible RWX
 mmap of the malloc arena, an unreachable `RLIMIT_NOFILE`-derived kernel fd range
 on modern macOS, and an unchecked `PROT_EXEC` file mmap of the ELF.
@@ -323,12 +323,45 @@ Two consequences worth stating:
   range, so no VA translates into the extra IPA — and it is the caller's own
   reservation regardless. No leak.
 
-**Still open:** `vmm_munmap` panics. `do_munmap` only reaches it for a region
-that already exists, and a fresh exec address space has none, so ELF loading
-never calls it — which is why the loader can proceed. `munmap`, `mprotect` and
-`MAP_FIXED` remap all need it, and doing it right means clearing stage-1 PTEs
-(with a TLB invalidate the framework does not expose directly), unmapping the
-stage-2 block, and reclaiming the IPA. That is the next mm piece after exec.
+### 3.5.3 `vmm_munmap` and the TLB — measured, and partly done
+
+Unmapping a guest VA turned out to hinge on a non-obvious HVF property, so it
+was spiked on hardware before implementing. Findings, all measured on an M5:
+
+- **The guest's own `TLBI` does not work.** An EL1 `tlbi vmalle1` (and
+  `vmalle1is`) executes but does **not** invalidate the guest's cached
+  translations — a subsequent access to a page whose stage-1 descriptor was
+  just cleared still succeeds. HVF appears to cache combined stage-1+2
+  VA→host entries that guest TLB maintenance does not reach. And the arm64
+  `hv_vcpu_*` API has no TLB-invalidate call (only the x86 half of the
+  framework does).
+- **`hv_vm_unmap` reliably does.** Unmapping a page's 16KiB stage-2 block
+  faults the next access — even with a sibling page primed in the same block,
+  and it survives an unrelated `hv_vm_map` in between. This is the only reliable
+  invalidation primitive available.
+
+So `vmm_munmap` ([src/mm/pt_arm64.c](src/mm/pt_arm64.c)) unmaps whole 16KiB
+stage-2 blocks and clears their stage-1 descriptors. Verified on hardware
+(`make check-arm64`, test_arm64_munmap.c): an unmapped region faults, and an
+adjacent region is untouched. This covers **whole-region munmap** — the common
+case, and everything `mprotect`-free code and the dynamic linker's whole-mapping
+teardown need.
+
+**Not done: the sub-block partial split.** A `munmap` that unmaps one 4KiB page
+of a 16KiB block while a sibling page stays live cannot use the block-unmap
+primitive (it would fault the survivor too), and the guest `TLBI` that would let
+us clear just the one stage-1 entry does not work. The fix is *evacuation* —
+re-home the survivor to a fresh block so the old block can be unmapped whole —
+but a hardware spike showed that is not merely a page-table operation: because
+the no-copy backing shares one host page across the block, the survivor and the
+victim resolve to the same host page, and HVF keeps the victim's TLB entry alive
+as long as that host page is mapped anywhere. Evacuating with a *copy* to a
+fresh host page works for the TLB, but then desynchronises the survivor's
+`mm_region.haddr` (the host still reads the old buffer via `guest_to_host`).
+Doing it correctly means moving the region's backing with the page — a change to
+the mmap ownership model, not the page tables. Until then such a split panics
+loudly rather than silently leaving the unmapped page reachable. It is rare:
+whole-region munmap never hits it.
 
 ### 3.5.1 Cache coherency — net-new work with no x86 counterpart
 

@@ -379,11 +379,97 @@ vmm_mmap(gaddr_t gaddr, size_t size, int prot, void *haddr)
  * does not expose directly), unmapping the stage-2 block and reclaiming the
  * IPA. Panic rather than silently leave the guest able to reach freed memory.
  */
+/*
+ * Read-only walk: the level-3 descriptor for `va`, or NULL if any level of the
+ * walk is missing. Unlike walk_to_l3 it never allocates - for unmapping an
+ * address that may not be fully mapped.
+ */
+static uint64_t *
+walk_existing(gaddr_t va)
+{
+  if (l1_table.entries == NULL)
+    return NULL;
+  uint64_t *l1e = &l1_table.entries[L1_INDEX(va)];
+  if ((*l1e & PTE_VALID) == 0)
+    return NULL;
+  uint64_t *l2 = ipa_to_host(*l1e & PTE_ADDR_MASK);
+  uint64_t *l2e = &l2[L2_INDEX(va)];
+  if ((*l2e & PTE_VALID) == 0)
+    return NULL;
+  uint64_t *l3 = ipa_to_host(*l2e & PTE_ADDR_MASK);
+  return &l3[L3_INDEX(va)];
+}
+
+/*
+ * Is any stage-1 page still mapped into the 16KiB stage-2 block that backs
+ * guest-physical `ipa`, other than within [va_lo, va_hi)?
+ *
+ * The block's four 4KiB slots correspond to four contiguous guest VAs, and VA
+ * and IPA are congruent modulo 16KiB within a region (see PORTING-arm64.md
+ * 3.5.2), so the block's VAs are derivable from one page's (va, ipa) without
+ * any reverse map: va_block_base = va - (ipa mod 16KiB).
+ */
+static bool
+block_has_survivor(gaddr_t va, gaddr_t ipa, gaddr_t va_lo, gaddr_t va_hi)
+{
+  gaddr_t block_base_ipa = ipa & ~(STAGE2_GRANULE - 1);
+  gaddr_t va_block_base = va - (ipa & (STAGE2_GRANULE - 1));
+
+  for (int j = 0; j < (int)(STAGE2_GRANULE / PAGE_SIZEOF(PAGE_4KB)); j++) {
+    gaddr_t cand = va_block_base + (gaddr_t) j * PAGE_SIZEOF(PAGE_4KB);
+    if (cand >= va_lo && cand < va_hi)
+      continue;                        /* being unmapped, not a survivor */
+    uint64_t *pte = walk_existing(cand);
+    if (pte && (*pte & PTE_VALID) &&
+        (*pte & PTE_ADDR_MASK) >= block_base_ipa &&
+        (*pte & PTE_ADDR_MASK) <  block_base_ipa + STAGE2_GRANULE)
+      return true;
+  }
+  return false;
+}
+
+/*
+ * Unmap a guest VA range.
+ *
+ * The reliable primitive on Apple Silicon is hv_vm_unmap of a 16KiB stage-2
+ * block: it faults subsequent access (measured; the guest's own TLBI does NOT
+ * invalidate HVF's combined stage-1+2 TLB entries, so clearing a stage-1 PTE
+ * alone is not enough). So this unmaps whole 16KiB blocks that the range fully
+ * accounts for, and clears their stage-1 descriptors.
+ *
+ * The unhandled case is a 16KiB block that still has a live page OUTSIDE the
+ * range - a partial munmap that splits a 16KiB block. Making that page's
+ * neighbour fault while keeping it mapped needs "evacuation" (re-homing the
+ * survivor to a fresh block), which in turn needs the survivor's mm_region
+ * backing to move with it - a change to the mmap ownership model, not just the
+ * page tables. Until then such a split panics rather than silently leaving the
+ * unmapped page reachable through a stale TLB entry. It is rare: whole-region
+ * munmap, the common case, never hits it.
+ */
 void
 vmm_munmap(gaddr_t gaddr, size_t size)
 {
-  (void) gaddr;
-  (void) size;
-  panic("vmm_munmap: VA-region unmap not implemented for arm64 yet "
-        "(munmap/mprotect/MAP_FIXED-remap). See PORTING-arm64.md 3.5.2.");
+  gaddr_t va_lo = gaddr;
+  gaddr_t va_hi = gaddr + size;
+  gaddr_t pagesz = PAGE_SIZEOF(PAGE_4KB);
+
+  for (gaddr_t va = va_lo; va < va_hi; va += pagesz) {
+    uint64_t *pte = walk_existing(va);
+    if (!pte || !(*pte & PTE_VALID))
+      continue;
+
+    gaddr_t ipa = *pte & PTE_ADDR_MASK;
+
+    if (block_has_survivor(va, ipa, va_lo, va_hi)) {
+      panic("vmm_munmap: partial unmap splits a 16KiB stage-2 block at "
+            "va 0x%llx - evacuation not implemented (see PORTING-arm64.md "
+            "3.5.2 / 3.5.3).", (unsigned long long) va);
+    }
+
+    /* Clear the stage-1 descriptor and unmap the whole 16KiB stage-2 block.
+     * Other slots of the block are either in this range (cleared as we reach
+     * them) or unmapped tail, so unmapping the block harms nothing. */
+    *pte = 0;
+    vmm_arm64_unmap_stage2(ipa & ~(STAGE2_GRANULE - 1), STAGE2_GRANULE);
+  }
 }

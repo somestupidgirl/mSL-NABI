@@ -236,11 +236,20 @@ $(BOOT_TEST): test/arch/test_arm64_boot.c src/main_arm64.c src/mm/pt_arm64.c lib
 	    -framework Hypervisor
 	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
 
-check-arm64: $(ARM64_TEST) $(MMU_TEST) $(VMMAP_TEST) $(BOOT_TEST)
+MUNMAP_TEST := $(OUT)/test_arm64_munmap
+
+$(MUNMAP_TEST): test/arch/test_arm64_munmap.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c $(HEADERS) | $(OUT)
+	$(CC) -arch arm64 -std=gnu11 -O0 -g \
+	    -Wall -Wextra -Wno-unused-parameter -Iinclude \
+	    -o $@ test/arch/test_arm64_munmap.c src/mm/pt_arm64.c lib/vmm_arm64.c lib/vmm_arm64_exit.c \
+	    -framework Hypervisor
+	$(CODESIGN) --force --sign $(SIGNCERT) --entitlements $(ENTITLEMENTS) $@
+
+check-arm64: $(ARM64_TEST) $(MMU_TEST) $(VMMAP_TEST) $(BOOT_TEST) $(MUNMAP_TEST)
 	@if [ "$(NATIVE_ARCH)" != "arm64" ]; then \
 		echo "SKIP: the aarch64 backend tests need Apple Silicon to run."; \
 	else \
-		$(ARM64_TEST) && $(MMU_TEST) && $(VMMAP_TEST) && $(BOOT_TEST); \
+		$(ARM64_TEST) && $(MMU_TEST) && $(VMMAP_TEST) && $(BOOT_TEST) && $(MUNMAP_TEST); \
 	fi
 
 # End-to-end: run committed aarch64 binaries under a natively-built nabi. Needs
