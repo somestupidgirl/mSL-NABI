@@ -16,7 +16,22 @@
 #include "vmm.h"
 #include "mm.h"
 #include "x86/vm.h"
+#if defined(__arm64__)
+#include "arm64/vm.h"
+#endif
 #include "elf.h"
+
+/*
+ * The page granule ELF segments are aligned to when loaded. Must match the
+ * guest's AT_PAGESZ and the mmap granule (src/mm/mmap.c): 16KiB on Apple
+ * Silicon, so a segment never shares a 16KiB stage-2 block with its neighbour
+ * (which vmm_munmap cannot split), 4KiB on x86.
+ */
+#if defined(__arm64__)
+#define LOAD_GRANULE STAGE2_GRANULE
+#else
+#define LOAD_GRANULE PAGE_SIZEOF(PAGE_4KB)
+#endif
 
 /* The ELF e_machine the guest must be. The whole point of the port: flip this
  * from EM_X86_64 to EM_AARCH64 and the loader accepts aarch64 binaries. */
@@ -82,10 +97,10 @@ load_elf_interp(const char *path, ulong load_addr)
 
     ulong p_vaddr = p[i].p_vaddr + load_addr;
 
-    ulong mask = PAGE_SIZEOF(PAGE_4KB) - 1;
+    ulong mask = LOAD_GRANULE - 1;
     ulong vaddr = p_vaddr & ~mask;
     ulong offset = p_vaddr & mask;
-    ulong size = roundup(p[i].p_memsz + offset, PAGE_SIZEOF(PAGE_4KB));
+    ulong size = roundup(p[i].p_memsz + offset, LOAD_GRANULE);
 
     int prot = 0;
     if (p[i].p_flags & PF_X) prot |= LINUX_PROT_EXEC;
@@ -102,7 +117,7 @@ load_elf_interp(const char *path, ulong load_addr)
     if (prot & LINUX_PROT_EXEC)
       vmm_sync_guest_code(vaddr + offset, p[i].p_filesz);
 
-    map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZEOF(PAGE_4KB)));
+    map_top = MAX(map_top, roundup(vaddr + size, LOAD_GRANULE));
   }
 
   vmm_set_reg(VREG_PC, load_addr + h->e_entry);
@@ -149,10 +164,10 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
 
     ulong p_vaddr = p[i].p_vaddr + global_offset;
 
-    ulong mask = PAGE_SIZEOF(PAGE_4KB) - 1;
+    ulong mask = LOAD_GRANULE - 1;
     ulong vaddr = p_vaddr & ~mask;
     ulong offset = p_vaddr & mask;
-    ulong size = roundup(p[i].p_memsz + offset, PAGE_SIZEOF(PAGE_4KB));
+    ulong size = roundup(p[i].p_memsz + offset, LOAD_GRANULE);
 
     int prot = 0;
     if (p[i].p_flags & PF_X) prot |= LINUX_PROT_EXEC;
@@ -172,7 +187,7 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
       load_base = p[i].p_vaddr - p[i].p_offset + global_offset;
       load_base_set = true;
     }
-    map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZEOF(PAGE_4KB)));
+    map_top = MAX(map_top, roundup(vaddr + size, LOAD_GRANULE));
   }
 
   assert(load_base_set);
@@ -333,7 +348,11 @@ init_userstack(int argc, char *argv[], char **envp, uint64_t exe_base, const Elf
     { AT_PHDR, exe_base + ehdr->e_phoff },
     { AT_PHENT, ehdr->e_phentsize },
     { AT_PHNUM, ehdr->e_phnum },
+#if defined(__arm64__)
+    { AT_PAGESZ, STAGE2_GRANULE },   /* Apple Silicon is a 16KiB-page machine */
+#else
     { AT_PAGESZ, PAGE_SIZEOF(PAGE_4KB) },
+#endif
     { AT_RANDOM, rand_ptr },
     { AT_NULL, 0 },
   };

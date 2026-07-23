@@ -20,6 +20,33 @@
 
 #include <Hypervisor/hv.h>
 
+/*
+ * The granule the guest sees as its page size. On Apple Silicon the host (and
+ * the stage-2 mapping) works in 16KiB pages, so the guest is told 16KiB via
+ * AT_PAGESZ and every mmap region is kept 16KiB-aligned and 16KiB-granular -
+ * otherwise ld.so mapping library segments at 4KiB boundaries would split a
+ * 16KiB stage-2 block, which vmm_munmap cannot do. x86 keeps its native 4KiB.
+ */
+#if defined(__arm64__)
+#include "arm64/vm.h"
+#define GUEST_MMAP_GRANULE STAGE2_GRANULE
+/*
+ * TODO(arm64 mprotect): the x86 path calls hv_vm_protect(region->gaddr, ...),
+ * but region->gaddr is a guest VIRTUAL address and hv_vm_protect wants an IPA
+ * (stage-2) - on arm64 that reinterprets a VA as an IPA and corrupts an
+ * unrelated region, and it never updates the stage-1 descriptors that actually
+ * enforce EL0 permissions. A correct implementation walks the stage-1 tables to
+ * repermission the VA range (and, if stage-2 is ever tightened below RWX, the
+ * matching IPA). Until then this is an over-permissive no-op - the host-side
+ * mprotect below still runs, and the region's recorded prot is updated - which
+ * is strictly safer than the corrupting call it replaces.
+ */
+#define NABI_VM_PROTECT(region) ((void)0)
+#else
+#define GUEST_MMAP_GRANULE PAGE_SIZEOF(PAGE_4KB)
+#define NABI_VM_PROTECT(region) hv_vm_protect((region)->gaddr, (region)->size, hvprot)
+#endif
+
 void
 init_mmap(struct mm *mm)
 {
@@ -29,7 +56,7 @@ init_mmap(struct mm *mm)
 gaddr_t
 alloc_region(size_t len)
 {
-  len = roundup(len, PAGE_SIZEOF(PAGE_4KB));
+  len = roundup(len, GUEST_MMAP_GRANULE);
   proc.mm->current_mmap_top += len;
   return proc.mm->current_mmap_top - len;
 }
@@ -40,7 +67,14 @@ do_munmap(gaddr_t gaddr, size_t size)
   if (!is_page_aligned((void*)gaddr, PAGE_4KB)) {
     return -LINUX_EINVAL;
   }
-  size = roundup(size, PAGE_SIZEOF(PAGE_4KB)); // Linux kernel also does this
+  /*
+   * Round up to the guest page granule, as the kernel does - glibc's ld.so
+   * passes raw, unrounded segment lengths to munmap and relies on the kernel to
+   * extend them to a whole page. On arm64 the granule is 16KiB, so this is also
+   * what keeps a munmap from ending mid-16KiB-block and splitting it (which the
+   * stage-2 layer cannot do); see GUEST_MMAP_GRANULE.
+   */
+  size = roundup(size, GUEST_MMAP_GRANULE);
 
   struct mm_region *overlapping = find_region_range(gaddr, size, proc.mm);
   if (overlapping == NULL) {
@@ -96,7 +130,7 @@ do_mmap(gaddr_t addr, size_t len, int d_prot, int l_prot, int l_flags, int fd, o
   /* the linux kernel does nothing for LINUX_MAP_STACK */
   l_flags &= ~LINUX_MAP_STACK;
 
-  len = roundup(len, PAGE_SIZEOF(PAGE_4KB));
+  len = roundup(len, GUEST_MMAP_GRANULE);
 
   if ((l_flags & ~(LINUX_MAP_SHARED | LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANON | LINUX_MAP_HUGETLB)) != 0) {
     warnk("unsupported mmap l_flags: 0x%x\n", l_flags);
@@ -110,15 +144,54 @@ do_mmap(gaddr_t addr, size_t len, int d_prot, int l_prot, int l_flags, int fd, o
     addr = alloc_region(len);
   }
 
-  void *ptr = mmap(0, len, d_prot, linux_to_darwin_mflags(l_flags), fd, offset);
-  if (ptr == MAP_FAILED) {
-    return -darwin_to_linux_errno(errno);
+  void *ptr;
+#if defined(__arm64__)
+  if (fd >= 0) {
+    /*
+     * File-backed mapping. Apple Silicon cannot map a file into the guest
+     * directly: it rejects PROT_EXEC file maps (EPERM - an arbitrary file may
+     * not be mapped executable under the hardened runtime) and requires
+     * 16KiB-aligned file offsets, while a 4KiB-page guest's ld.so maps library
+     * segments R-X at 4KiB-aligned offsets. So back the region with anonymous
+     * host memory and copy the file's bytes in. The guest's real R/W/X comes
+     * from stage-2 (vmm_mmap below), so the host copy only needs to be readable
+     * and writable by us, and MAP_PRIVATE is exactly these copy semantics. A
+     * short read at EOF leaves the tail zero, which is what a file mapping past
+     * end-of-file must read as. (MAP_SHARED write-back to the file is not
+     * preserved - no guest run so far needs it.)
+     */
+    ptr = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (ptr == MAP_FAILED)
+      return -darwin_to_linux_errno(errno);
+    if (pread(fd, ptr, len, offset) < 0) {
+      int e = errno;
+      munmap(ptr, len);
+      return -darwin_to_linux_errno(e);
+    }
+  } else
+#endif
+  {
+    ptr = mmap(0, len, d_prot, linux_to_darwin_mflags(l_flags), fd, offset);
+    if (ptr == MAP_FAILED)
+      return -darwin_to_linux_errno(errno);
   }
 
   do_munmap(addr, len);
   record_region(proc.mm, ptr, addr, len, l_prot, l_flags, fd, offset);
 
   vmm_mmap(addr, len, linux_mprot_to_hv_mflag(l_prot), ptr);
+
+#if defined(__arm64__)
+  /*
+   * A file mapped executable was just written into guest memory by the host
+   * (the pread copy above) - ld.so maps a shared library's .text this way. The
+   * guest's instruction fetch will not see those bytes until the caches are
+   * reconciled, exactly as the ELF loader does for its own PF_X segments. Skip
+   * it for anonymous exec maps: nothing is written yet (JIT writes come later).
+   */
+  if ((l_prot & LINUX_PROT_EXEC) && fd >= 0)
+    vmm_sync_guest_code(addr, len);
+#endif
 
   return addr;
 }
@@ -244,12 +317,12 @@ DEFINE_SYSCALL(mprotect, gaddr_t, addr, size_t, len, int, prot)
     split_region(proc.mm, region, addr);
     region = list_entry(region->list.next, struct mm_region, list);
 
-    hv_vm_protect(region->gaddr, region->size, hvprot);
+    NABI_VM_PROTECT(region);
     mprotect(region->haddr, region->size, prot);
     region->prot = hvprot;
   }
   while (region->gaddr + region->size <= end) {
-    hv_vm_protect(region->gaddr, region->size, hvprot);
+    NABI_VM_PROTECT(region);
     mprotect(region->haddr, region->size, prot);
     region->prot = hvprot;
 
@@ -266,7 +339,7 @@ DEFINE_SYSCALL(mprotect, gaddr_t, addr, size_t, len, int, prot)
   }
   if (region->gaddr < end) {
     split_region(proc.mm, region, end);
-    hv_vm_protect(region->gaddr, region->size, hvprot);
+    NABI_VM_PROTECT(region);
     mprotect(region->haddr, region->size, prot);
     region->prot = hvprot;
   }
